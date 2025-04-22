@@ -20,6 +20,7 @@ from celery import Celery
 from celery.utils.log import get_task_logger
 
 from supply_optimizer import optimize_energy_system
+from grid_optimizer import optimize_grid
 
 
 logger = get_task_logger(__name__)
@@ -43,6 +44,28 @@ def task_supply_opt(simulation_input: dict,) -> dict:
         if "message" in simulation_output:
             simulation_output["ERROR"] = simulation_output["message"]
             simulation_output["INPUT_JSON"] = simulation_input
+        simulation_output = json.dumps(simulation_output)
+    except Exception as e:
+        logger.error(
+            "An exception occured in the simulation task: {}".format(
+                traceback.format_exc()
+            )
+        )
+        simulation_output = json.dumps(dict(
+            SERVER=CELERY_TASK_NAME,
+            ERROR="{}".format(traceback.format_exc()),
+            INPUT_JSON=simulation_input,
+        ))
+    return simulation_output
+
+
+@app.task(name=f"grid.run_simulation")
+def task_grid_opt(simulation_input: dict,) -> dict:
+    logger.info("Start new simulation")
+    try:
+        simulation_output = optimize_grid(simulation_input)
+        logger.info("Simulation finished")
+        simulation_output["SERVER"] = CELERY_TASK_NAME
     except Exception as e:
         logger.error(
             "An exception occured in the simulation task: {}".format(
@@ -55,4 +78,3 @@ def task_supply_opt(simulation_input: dict,) -> dict:
             INPUT_JSON=simulation_input,
         )
     return json.dumps(simulation_output)
-
