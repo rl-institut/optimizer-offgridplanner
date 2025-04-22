@@ -145,4 +145,8 @@ async def check_task(task_id: str) -> JSONResponse:
     return JSONResponse(content=jsonable_encoder(task))
 
 
+@app.get("/abort/{task_id}")
+async def revoke_task(task_id: str) -> JSONResponse:
     res = celery_app.AsyncResult(task_id)
+    res.revoke(terminate=True)
+    return JSONResponse(content=jsonable_encoder({"task_id": task_id, "aborted": True}))
