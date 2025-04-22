@@ -1,3 +1,16 @@
+"""
+This module in a FastAPI application uses Celery to handle asynchronous tasks:
+
+1. `task_grid_opt`: Optimizes grid layouts for users and projects, with retry capabilities.
+2. `task_supply_opt`: Optimizes energy supply systems for specific users and projects.
+3. `task_remove_anonymous_users`: Deletes anonymous user accounts asynchronously.
+
+Additionally, it includes functions to check the status of these tasks, identifying if they have completed, failed,
+or been revoked. This setup enables efficient, asynchronous processing of complex tasks and user management.
+"""
+
+
+
 import os
 import time
 import traceback
@@ -6,8 +19,7 @@ from copy import deepcopy
 from celery import Celery
 from celery.utils.log import get_task_logger
 
-from multi_vector_simulator.server import run_simulation as mvs_simulation
-from multi_vector_simulator.utils.data_parser import convert_epa_params_to_mvs
+from supply_optimizer import optimize_energy_system
 
 
 logger = get_task_logger(__name__)
@@ -16,22 +28,21 @@ CELERY_RESULT_BACKEND = os.environ.get(
     "CELERY_RESULT_BACKEND", "redis://localhost:6379"
 )
 
-CELERY_TASK_NAME = os.environ.get("CELERY_TASK_NAME", "dev")
+CELERY_TASK_NAME = os.environ.get("CELERY_TASK_NAME", "grid")
 
 app = Celery(CELERY_TASK_NAME, broker=CELERY_BROKER_URL, backend=CELERY_RESULT_BACKEND)
 
 
-@app.task(name=f"{CELERY_TASK_NAME}.run_simulation")
-def run_simulation(simulation_input: dict,) -> dict:
+@app.task(name=f"supply.run_simulation")
+def task_supply_opt(simulation_input: dict,) -> dict:
     logger.info("Start new simulation")
-    epa_json = deepcopy(simulation_input)
-    dict_values = None
     try:
-        dict_values = convert_epa_params_to_mvs(simulation_input)
-        logger.debug("Converted epa parameters to mvs input")
-        simulation_output = mvs_simulation(dict_values)
+        simulation_output = optimize_energy_system(simulation_input)
         logger.info("Simulation finished")
         simulation_output["SERVER"] = CELERY_TASK_NAME
+        if "message" in simulation_output:
+            simulation_output["ERROR"] = simulation_output["message"]
+            simulation_output["INPUT_JSON"] = simulation_input
     except Exception as e:
         logger.error(
             "An exception occured in the simulation task: {}".format(
@@ -41,7 +52,7 @@ def run_simulation(simulation_input: dict,) -> dict:
         simulation_output = dict(
             SERVER=CELERY_TASK_NAME,
             ERROR="{}".format(traceback.format_exc()),
-            INPUT_JSON_EPA=simulation_input,
-            INPUT_JSON_MVS=dict_values,
+            INPUT_JSON=simulation_input,
         )
     return json.dumps(simulation_output)
+
