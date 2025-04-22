@@ -64,7 +64,12 @@ logger = logging.getLogger(__name__)
 def optimize_energy_system(energy_system_json):
     ensys_opt = EnergySystemOptimizer(supply_opt_json=energy_system_json)
     results = ensys_opt.optimize()
-    return results
+    esr = {}
+    for k, v in results.items():
+        v['scalars'] = v['scalars'].to_json()
+        v['sequences'] = np.squeeze(v['sequences'].dropna().values).tolist()
+        esr[f"{k[0]}__{k[1]}"] = v
+    return esr
 
 
 class EnergySystemOptimizer:
@@ -491,20 +496,8 @@ class EnergySystemOptimizer:
             return {"message": "An error ocurred during the optimization"}
 
     def _process_results(self):
-        nodes = [
-            "pv",
-            "fuel_source",
-            "diesel_genset",
-            "inverter",
-            "rectifier",
-            "battery",
-            "electricity_demand",
-            "surplus",
-            "shortage",
-        ]
-        results = {
-            node: solph.views.node(self.results_main, node=node) for node in nodes
-        }
+        nodes = [            "pv",            "fuel_source",            "diesel_genset",            "inverter",            "rectifier",            "battery",            "electricity_demand","surplus","shortage",]
+        res_nodes = {node: solph.views.node(self.results_main, node=node) for node in nodes}
 
         #  SEQUENCES (DYNAMIC)
         self.sequences_demand = results["electricity_demand"]["sequences"][
@@ -512,44 +505,44 @@ class EnergySystemOptimizer:
         ]
 
         self.sequences = {
-            "pv": {"comp": "pv", "key": (("pv", "electricity_dc"), "flow")},
+            "pv": {"comp": "pv", "key": "pv__electricity_dc"},
             "genset": {
                 "comp": "diesel_genset",
-                "key": (("diesel_genset", "electricity_ac"), "flow"),
+                "key": "diesel_genset__electricity_ac",
             },
             "battery_charge": {
                 "comp": "battery",
-                "key": (("electricity_dc", "battery"), "flow"),
+                "key": "electricity_dc__battery",
             },
             "battery_discharge": {
                 "comp": "battery",
-                "key": (("battery", "electricity_dc"), "flow"),
+                "key": "battery__electricity_dc",
             },
             "battery_content": {
                 "comp": "battery",
-                "key": (("battery", "None"), "storage_content"),
+                "key": "battery__None",
             },
             "inverter": {
                 "comp": "inverter",
-                "key": (("inverter", "electricity_ac"), "flow"),
+                "key": "inverter__electricity_ac",
             },
             "rectifier": {
                 "comp": "rectifier",
-                "key": (("rectifier", "electricity_dc"), "flow"),
+                "key": "rectifier__electricity_dc",
             },
             "surplus": {
                 "comp": "surplus",
-                "key": (("electricity_ac", "surplus"), "flow"),
+                "key": "electricity_ac__surplus",
             },
             "shortage": {
                 "comp": "shortage",
-                "key": (("shortage", "electricity_ac"), "flow"),
+                "key": "shortage__electricity_ac",
             },
         }
 
         for seq, val in self.sequences.items():
             setattr(
-                self, f"sequences_{seq}", results[val["comp"]]["sequences"][val["key"]]
+                self, f"sequences_{seq}", results[val["key"]]
             )
 
         # Fuel consumption conversion
