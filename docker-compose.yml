@@ -1,10 +1,13 @@
 version: "3"
 services:
   web:
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
     build:
       # `context` should be a path to a directory containing a Dockerfile
-      context: ./fastapi_app
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./fastapi_app/Dockerfile
     restart: unless-stopped
     ports:
       - "5001:5001"
@@ -15,22 +18,26 @@ services:
       - sim_network
   worker-supply:
     environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERY_TASK_NAME=supply
     build:
       # context should be the name of the folder which define the tasks
-      context: task_queue
-      dockerfile: Dockerfile_dev
+      context: .
+      dockerfile: ./task_queue/Dockerfile
     depends_on:
       - redis
     networks:
       - sim_network
   worker-grid:
     environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERY_TASK_NAME=grid
     build:
       # context should be the name of the folder which define the tasks
-      context: task_queue
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./task_queue/Dockerfile
     depends_on:
       - redis
     networks:

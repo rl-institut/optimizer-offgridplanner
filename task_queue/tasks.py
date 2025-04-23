@@ -19,8 +19,8 @@ from copy import deepcopy
 from celery import Celery
 from celery.utils.log import get_task_logger
 
-from supply_optimizer import optimize_energy_system
-from grid_optimizer import optimize_grid
+from task_queue.supply_optimizer import optimize_energy_system
+from task_queue.grid_optimizer import optimize_grid
 
 
 logger = get_task_logger(__name__)
