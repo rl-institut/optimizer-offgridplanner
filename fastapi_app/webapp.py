@@ -8,21 +8,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import StreamingResponse
 
-
-from multi_vector_simulator import version as mvs_version
-
-from multi_vector_simulator.utils.constants_json_strings import (
-    SIMULATION_SETTINGS,
-    OUTPUT_LP_FILE,
-    VALUE,
-    UNIT,
-)
-
-MVS_DEV_VERSION = os.environ.get("MVS_DEV_VERSION", mvs_version.version_num)
-MVS_OPEN_PLAN_VERSION = os.environ.get("MVS_OPEN_PLAN_VERSION", mvs_version.version_num)
-
-MVS_SERVER_VERSIONS = {"dev": MVS_DEV_VERSION, "open_plan": MVS_OPEN_PLAN_VERSION}
-
 try:
     from worker import app as celery_app
 except ModuleNotFoundError:
@@ -63,13 +48,11 @@ def index(request: Request) -> Response:
         "index.html",
         {
             "request": request,
-            "mvs_dev_version": MVS_DEV_VERSION,
-            "mvs_open_plan_version": MVS_OPEN_PLAN_VERSION,
         },
     )
 
 
-async def simulate_json_variable(request: Request, queue: str = "dev"):
+async def simulate_json_variable(request: Request, queue: str = "supply"):
     """Receive mvs simulation parameter in json post request and send it to simulator"""
     input_dict = await request.json()
 
@@ -82,18 +65,18 @@ async def simulate_json_variable(request: Request, queue: str = "dev"):
     return queue_answer
 
 
-@app.post("/sendjson/")
-async def simulate_json_variable_dev(request: Request):
-    return await simulate_json_variable(request, queue="dev")
+@app.post("/sendjson/grid")
+async def simulate_json_variable_grid(request: Request):
+    return await simulate_json_variable(request, queue="grid")
 
 
-@app.post("/sendjson/openplan")
-async def simulate_json_variable_open_plan(request: Request):
-    return await simulate_json_variable(request, queue="open_plan")
+@app.post("/sendjson/supply")
+async def simulate_json_variable_supply(request: Request):
+    return await simulate_json_variable(request, queue="supply")
 
 
-@app.post("/uploadjson/dev")
-def simulate_uploaded_json_files_dev(
+@app.post("/uploadjson/grid")
+def simulate_uploaded_json_files_grid(
     request: Request, json_file: UploadFile = File(...)
 ):
     """Receive mvs simulation parameter in json post request and send it to simulator
@@ -101,11 +84,11 @@ def simulate_uploaded_json_files_dev(
     argument of this function
     """
     json_content = jsonable_encoder(json_file.file.read())
-    return run_simulation(request, input_json=json_content)
+    return run_simulation(request, input_json=json_content, queue="grid")
 
 
-@app.post("/uploadjson/open_plan")
-def simulate_uploaded_json_files_open_plan(
+@app.post("/uploadjson/supply")
+def simulate_uploaded_json_files_supply(
     request: Request, json_file: UploadFile = File(...)
 ):
     """Receive mvs simulation parameter in json post request and send it to simulator
@@ -113,10 +96,10 @@ def simulate_uploaded_json_files_open_plan(
     argument of this function
     """
     json_content = jsonable_encoder(json_file.file.read())
-    return run_simulation_open_plan(request, input_json=json_content)
+    return run_simulation(request, input_json=json_content, queue="supply")
 
 
-def run_simulation(request: Request, input_json=None, queue="dev") -> Response:
+def run_simulation(request: Request, input_json=None, queue="supply") -> Response:
     """Send a simulation task to a celery worker"""
 
     if input_json is None:
@@ -137,22 +120,12 @@ def run_simulation(request: Request, input_json=None, queue="dev") -> Response:
     )
 
 
-@app.post("/run_simulation")
-def run_simulation_dev(request: Request, input_json=None) -> Response:
-    return run_simulation(request, input_json, queue="dev")
-
-
-@app.post("/run_simulation_open_plan")
-def run_simulation_open_plan(request: Request, input_json=None) -> Response:
-    return run_simulation(request, input_json, queue="open_plan")
-
 
 @app.get("/check/{task_id}")
 async def check_task(task_id: str) -> JSONResponse:
     res = celery_app.AsyncResult(task_id)
     task = {
         "server_info": None,
-        "mvs_version": None,
         "id": task_id,
         "status": res.state,
         "results": None,
@@ -164,8 +137,7 @@ async def check_task(task_id: str) -> JSONResponse:
         results_as_dict = json.loads(res.result)
         server_info = results_as_dict.pop("SERVER")
         task["server_info"] = server_info
-        task["mvs_version"] = MVS_SERVER_VERSIONS.get(server_info, "unknown")
-        task["results"] = json.dumps(results_as_dict)
+        task["results"] = results_as_dict
         if "ERROR" in task["results"]:
             task["status"] = "ERROR"
             task["results"] = results_as_dict
@@ -173,42 +145,8 @@ async def check_task(task_id: str) -> JSONResponse:
     return JSONResponse(content=jsonable_encoder(task))
 
 
-@app.get("/get_lp_file/{task_id}")
-async def get_lp_file(task_id: str) -> Response:
+@app.get("/abort/{task_id}")
+async def revoke_task(task_id: str) -> JSONResponse:
     res = celery_app.AsyncResult(task_id)
-    task = {
-        "server_info": None,
-        "mvs_version": mvs_version,
-        "id": task_id,
-        "status": res.state,
-        "results": None,
-    }
-    if res.state == states.PENDING:
-        task["status"] = res.state
-        response = JSONResponse(content=jsonable_encoder(task))
-    else:
-        task["status"] = "DONE"
-        results_as_dict = json.loads(res.result)
-        server_info = results_as_dict.pop("SERVER")
-        task["server_info"] = server_info
-        task["mvs_version"] = MVS_SERVER_VERSIONS.get(server_info, "unknown")
-        task["results"] = json.dumps(results_as_dict)
-        if "ERROR" in task["results"]:
-            task["status"] = "ERROR"
-            task["results"] = results_as_dict
-
-        if OUTPUT_LP_FILE in results_as_dict[SIMULATION_SETTINGS]:
-
-            stream = io.StringIO(
-                results_as_dict[SIMULATION_SETTINGS][OUTPUT_LP_FILE][VALUE]
-            )
-
-            response = StreamingResponse(
-                iter([stream.getvalue()]), media_type="text/csv"
-            )
-            response.headers["Content-Disposition"] = "attachment; filename=lp_file.txt"
-
-        else:
-            response = "There is no LP file output, did you check the LP file option when you started your simulation?"
-
-    return response
+    res.revoke(terminate=True)
+    return JSONResponse(content=jsonable_encoder({"task_id": task_id, "aborted": True}))
