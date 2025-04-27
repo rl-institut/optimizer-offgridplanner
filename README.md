@@ -1,4 +1,4 @@
-# open-plan-tool simulation-server
+# offgridplanner simulation-server
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
@@ -42,19 +42,59 @@ to get the logs messages of the `web` service of the docker-compose.yml file
 
 Run `sudo docker-compose down` to shut the services down.
 
+### API calls
+The json file for the POST request `/sendjson/supply` is structured as follow
+```
+supply_opt_json = {
+    "sequences": {
+      "index": <datetime index of the year to simulate>,
+      "demand": <electrical demand as hourly timeseries over a year>,
+      "solar_potential": <solar_potential from pvlib using era5 weather data as hourly timeseries over a year>,
+     },
+    "energy_system_design": <nested dict containing supply system components and their parameters>,
+}
+```
+
+The json file for the POST request `/sendjson/grid` is structured as follow
+```
+
+
+grid_opt_json = {
+    "nodes": <dict in which the keys ['latitude', 'longitude', 'how_added', 'node_type', 'consumer_type', 'custom_specification', 'shs_options', 'consumer_detail', 'is_connected', 'distance_to_load_center', 'parent', 'distribution_cost'] contain a dict of values of the parameter described by the key, mapped to each node id>,
+    "grid_design": <nested dict containing grid system components and their parameters>,
+    "yearly_demand": <aggregated yearly demand>,
+}
+```
+
+They return a token id `task_id` which can be used to query the status/fetch the results which the GET request `/check/{task_id}`. The structure of the JSON response is the following:
+
+```
+{
+  "server_info": either "grid" or "supply"
+  "id": <the token id>
+  "status": <one of "DONE", "ERROR", "PENDING">
+  "results": <the results (nodes and links for 'grid' and oemof-solph results for 'supply')>
+}
+```
+
+If the status is `"ERROR"`, then the field `"results"` is replaced by the following two fields:
+```
+  "ERROR": <error message>
+  "INPUT_JSON": <json input to the simulation>
+```
 
 ### local deploy of the server
 
 Once you ran the docker-compose command from [Get started menu](#Get started) above,
 you should be able to visit http://127.0.0.1:5001 and see a page where you can upload json files to start a simulation. 
-The `SIM_HOST_API` environment variable in open-plan GUI should then be set as `SIM_HOST_API=http://127.0.0.1:5001`.
+The `SIM_HOST_API` environment variable in [offgridplanner GUI](https://github.com/rl-institut/django-offgridplanner) should then be set as `SIM_HOST_API=http://127.0.0.1:5001`.
 
 ### online deploy of the server
 
 You need first to have access to online services to host the server (eg. one of those listed in https://geekflare.com/docker-hosting-platforms/). 
 You might need to adapt the docker-compose.yml file to be able to access the docker container on a subdomain of your service provider. 
 You can then visit a URL to see the page equivalent to http://127.0.0.1:5001 in [above section](#local deploy of the server). 
-You need to link your open-plan gui to this URL.
+You need to link your [offgridplanner GUI](https://github.com/rl-institut/django-offgridplanner) to this URL.
 
 
 ## Develop while services are running
