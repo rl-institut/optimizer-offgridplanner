@@ -6,4 +6,5 @@ oemof.network==0.5.0a1
 oemof.solph==0.5
 k-means-constrained
 pyproj
+jsonschema
 
