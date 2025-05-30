@@ -244,6 +244,7 @@ class GridOptimizer:
             axis=1,
         )
         nodes_df = nodes_df.round(decimals=6)
+        nodes_df = nodes_df.replace(np.nan, None)
         if not nodes_df.empty:
             nodes_df.latitude = nodes_df.latitude.map(lambda x: f"{x:.6f}")
             nodes_df.longitude = nodes_df.longitude.map(lambda x: f"{x:.6f}")
@@ -275,8 +276,9 @@ class GridOptimizer:
         links_df.lon_from = links_df.lon_from.map(lambda x: f"{x:.6f}")
         links_df.lat_to = links_df.lat_to.map(lambda x: f"{x:.6f}")
         links_df.lon_to = links_df.lon_to.map(lambda x: f"{x:.6f}")
+        links_df = links_df.replace(np.nan, None)
 
-        return links_df.reset_index(drop=True).to_json()
+        return links_df.reset_index(drop=True).to_dict(orient="list")
 
     def _query_nodes(self):
         """
