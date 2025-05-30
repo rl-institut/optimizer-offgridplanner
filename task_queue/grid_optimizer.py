@@ -105,9 +105,8 @@ class GridOptimizer:
         print("Initiating grid optimizer...")
         # TODO go through the helper functions and figure out what they do / document
         self.start_execution_time = time.monotonic()
-        # self.grid_opt_json = json.loads(grid_opt_json)
         self.grid_opt_json = grid_opt_json
-        self.nodes = pd.read_json(self.grid_opt_json["nodes"])
+        self.nodes = pd.DataFrame(self.grid_opt_json["nodes"])
         self.grid_design_dict = self.grid_opt_json["grid_design"]
         self.yearly_demand = self.grid_opt_json["yearly_demand"]
         self.nodes_df, self.power_house = self._query_nodes()
@@ -255,7 +254,7 @@ class GridOptimizer:
                         None,
                     )
 
-        return nodes_df.reset_index(drop=True).to_json()
+        return nodes_df.reset_index(drop=True).to_dict(orient="list")
 
     def _process_links(self):
         links_df = self.links.reset_index(drop=True)
