@@ -1,12 +1,14 @@
 import os
 import json
 import io
-from fastapi import FastAPI, Request, Response, File, UploadFile
+from fastapi import FastAPI, Request, Response, File, UploadFile, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
+import importlib.util
 
 try:
     from worker import app as celery_app
@@ -150,3 +152,28 @@ async def revoke_task(task_id: str) -> JSONResponse:
     res = celery_app.AsyncResult(task_id)
     res.revoke(terminate=True)
     return JSONResponse(content=jsonable_encoder({"task_id": task_id, "aborted": True}))
+
+
+
+# The schema Python file must define a variable with the same name as the file
+# For example: static/grid_schema.py must contain a variable named `grid_schema`
+@app.get("/{name}")
+def get_schema_by_name(name: str):
+    schema_path = os.path.join(os.path.dirname(__file__), "static", f"{name}.py")
+
+    if not os.path.isfile(schema_path):
+        raise HTTPException(status_code=404, detail="Schema file not found")
+
+    try:
+        spec = importlib.util.spec_from_file_location(name, schema_path)
+        schema_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(schema_module)
+
+        if not hasattr(schema_module, name):
+            raise HTTPException(status_code=404, detail=f"Schema '{name}' not found")
+
+        return JSONResponse(content=getattr(schema_module, name))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error while loading schema: {e}")
+
