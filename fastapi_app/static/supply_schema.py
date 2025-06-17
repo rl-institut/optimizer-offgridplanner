@@ -1,4 +1,4 @@
-supply_schema = {
+supply_schema_input = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "properties": {
@@ -99,4 +99,39 @@ supply_schema = {
             "required": ["settings", "parameters"],
         }
     },
+}
+
+supply_schema_output = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "propertyNames": {
+        "enum": [
+            "battery__None",
+            "battery__electricity_dc",
+            "diesel_genset__electricity_ac",
+            "electricity_ac__electricity_demand",
+            "electricity_ac__rectifier",
+            "electricity_ac__surplus",
+            "electricity_dc__battery",
+            "electricity_dc__inverter",
+            "fuel__diesel_genset",
+            "fuel_source__fuel",
+            "inverter__electricity_ac",
+            "pv__electricity_dc",
+            "rectifier__electricity_dc",
+            "shortage__electricity_ac"
+        ]
+    },
+    "additionalProperties": {
+        "type": "object",
+        "properties": {
+            "scalars": {"type": "string"},
+            "sequences": {
+                "type": "array",
+                "items": {"type": "number"}
+            }
+        },
+        "required": ["scalars", "sequences"],
+        "additionalProperties": False
+    }
 }

@@ -9,6 +9,8 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import StreamingResponse
 from fastapi.responses import JSONResponse
 import importlib.util
+from fastapi.responses import JSONResponse
+import os
 
 try:
     from worker import app as celery_app
@@ -154,26 +156,29 @@ async def revoke_task(task_id: str) -> JSONResponse:
     return JSONResponse(content=jsonable_encoder({"task_id": task_id, "aborted": True}))
 
 
-
-# The schema Python file must define a variable with the same name as the file
-# For example: static/grid_schema.py must contain a variable named `grid_schema`
-@app.get("/{name}")
-def get_schema_by_name(name: str):
-    schema_path = os.path.join(os.path.dirname(__file__), "static", f"{name}.py")
+@app.get("/{schema_group}")
+@app.get("/{schema_group}/{variant}")
+def get_schema(schema_group: str, variant: str = "default"):
+    schema_file = f"{schema_group}.py"
+    schema_path = os.path.join(os.path.dirname(__file__), "static", schema_file)
 
     if not os.path.isfile(schema_path):
-        raise HTTPException(status_code=404, detail="Schema file not found")
+        raise HTTPException(status_code=404, detail=f"Schema file '{schema_file}' not found")
 
     try:
-        spec = importlib.util.spec_from_file_location(name, schema_path)
+        spec = importlib.util.spec_from_file_location(schema_group, schema_path)
         schema_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(schema_module)
-
-        if not hasattr(schema_module, name):
-            raise HTTPException(status_code=404, detail=f"Schema '{name}' not found")
-
-        return JSONResponse(content=getattr(schema_module, name))
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error while loading schema: {e}")
+        raise HTTPException(status_code=500, detail=f"Error while loading the module: {e}")
+
+    if variant == "default":
+        schema_var = schema_group
+    else:
+        schema_var = f"{schema_group}_{variant}"
+
+    if not hasattr(schema_module, schema_var):
+        raise HTTPException(status_code=404, detail=f"Schema variable '{schema_var}' not found in {schema_file}")
+
+    return JSONResponse(content=getattr(schema_module, schema_var))
 

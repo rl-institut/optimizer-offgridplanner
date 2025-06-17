@@ -1,63 +1,81 @@
 grid_schema = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
-    "required": ["node_fields", "nodes", "grid_design", "yearly_demand"],
+    "required": ["nodes", "grid_design", "yearly_demand"],
     "properties": {
-        "node_fields": {"type": "array", "items": {"type": "string"}},
         "nodes": {
-            "type": "array",
-            "items": {
-                "type": "array",
-                "items": [
-                    {"type": "integer"},  # id
-                    {"type": "string", "enum": ["automatic", "k-means"]},  # how_added
-                    {
-                        "type": "string",
-                        "enum": ["consumer", "power-house"],
-                    },  # node_type
-                    {
-                        "type": "string",
-                        "enum": ["enterprise", "household", "n.a.", "public_service"],
-                    },  # consumer_type
-                    {"type": "string"},  # custom_specification
-                    {"type": "integer", "enum": [0]},  # shs_options
-                    {
-                        "type": "string",
-                        "enum": [
-                            "Education_School",
-                            "Food_Bar",
-                            "Food_Drinks",
-                            "Health_CHPS",
-                            "Retail_Other",
-                            "Trades_Beauty or Hair",
-                            "Trades_Car or Motorbike Repair",
-                            "default",
-                            "n.a.",
-                        ],
-                    },  # consumer_detail
-                    {"type": "boolean"},  # is_connected
-                    {
-                        "type": "array",  # coordinates
-                        "items": [
-                            {"type": "number"},  # latitude
-                            {"type": "number"},  # longitude
-                        ],
-                        "minItems": 2,
-                        "maxItems": 2,
-                    },
-                ],
-                "minItems": 9,
-                "maxItems": 9,
+            "type": "object",
+            "required": [
+                "latitude",
+                "longitude",
+                "how_added",
+                "node_type",
+                "consumer_type",
+                "custom_specification",
+                "shs_options",
+                "consumer_detail",
+                "is_connected",
+            ],
+            "properties": {
+                "latitude": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                },
+                "longitude": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                },
+                "how_added": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "node_type": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "consumer_type": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "custom_specification": {
+                    "type": "array",
+                    "items": {"type": ["string", "null"]},
+                },
+                "shs_options": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                },
+                "consumer_detail": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "is_connected": {
+                    "type": "array",
+                    "items": {"type": "boolean"},
+                },
+                "distance_to_load_center": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                },
+                "distribution_cost": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                },
+                "parent": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
             },
+            "additionalProperties": False,
         },
         "grid_design": {
             "type": "object",
+            "required": ["distribution_cable", "connection_cable", "pole", "mg", "shs"],
             "properties": {
                 "distribution_cable": {
                     "type": "object",
-                    "required": ["lifetime", "capex", "max_length", "epc"],
+                    "required": ["capex", "max_length", "epc"],
                     "properties": {
-                        "lifetime": {"type": "integer"},
                         "capex": {"type": "number"},
                         "max_length": {"type": "number"},
                         "epc": {"type": "number"},
@@ -65,9 +83,8 @@ grid_schema = {
                 },
                 "connection_cable": {
                     "type": "object",
-                    "required": ["lifetime", "capex", "max_length", "epc"],
+                    "required": ["capex", "max_length", "epc"],
                     "properties": {
-                        "lifetime": {"type": "integer"},
                         "capex": {"type": "number"},
                         "max_length": {"type": "number"},
                         "epc": {"type": "number"},
@@ -75,9 +92,8 @@ grid_schema = {
                 },
                 "pole": {
                     "type": "object",
-                    "required": ["lifetime", "capex", "max_n_connections", "epc"],
+                    "required": ["capex", "max_n_connections", "epc"],
                     "properties": {
-                        "lifetime": {"type": "integer"},
                         "capex": {"type": "number"},
                         "max_n_connections": {"type": "integer"},
                         "epc": {"type": "number"},
@@ -100,8 +116,8 @@ grid_schema = {
                     },
                 },
             },
-            "required": ["distribution_cable", "connection_cable", "pole", "mg", "shs"],
         },
         "yearly_demand": {"type": "number"},
     },
+    "additionalProperties": False,
 }
