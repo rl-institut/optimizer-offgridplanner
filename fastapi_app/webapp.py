@@ -44,6 +44,10 @@ templates = Jinja2Templates(directory=os.path.join(SERVER_ROOT, "templates"))
 
 # Test Driven Development --> https://fastapi.tiangolo.com/tutorial/testing/
 
+def validate_optimization_model(model):
+    if model not in ["grid", "supply"]:
+        raise HTTPException(status_code=400, detail=f'{model} is not an accepted argument. Simulation options are "grid" or "supply"')
+    return
 
 @app.get("/")
 def index(request: Request) -> Response:
@@ -69,38 +73,23 @@ async def simulate_json_variable(request: Request, queue: str = "supply"):
     return queue_answer
 
 
-@app.post("/sendjson/grid")
-async def simulate_json_variable_grid(request: Request):
-    return await simulate_json_variable(request, queue="grid")
+@app.post("/sendjson/{model}")
+async def simulate_json_variable_grid(request: Request, model: str):
+    validate_optimization_model(model)
+    return await simulate_json_variable(request, queue=model)
 
 
-@app.post("/sendjson/supply")
-async def simulate_json_variable_supply(request: Request):
-    return await simulate_json_variable(request, queue="supply")
 
-
-@app.post("/uploadjson/grid")
+@app.post("/uploadjson/{model}")
 def simulate_uploaded_json_files_grid(
-    request: Request, json_file: UploadFile = File(...)
+    request: Request, model: str, json_file: UploadFile = File(...),
 ):
     """Receive mvs simulation parameter in json post request and send it to simulator
     the value of `name` property of the input html tag should be `json_file` as the second
     argument of this function
     """
     json_content = jsonable_encoder(json_file.file.read())
-    return run_simulation(request, input_json=json_content, queue="grid")
-
-
-@app.post("/uploadjson/supply")
-def simulate_uploaded_json_files_supply(
-    request: Request, json_file: UploadFile = File(...)
-):
-    """Receive mvs simulation parameter in json post request and send it to simulator
-    the value of `name` property of the input html tag should be `json_file` as the second
-    argument of this function
-    """
-    json_content = jsonable_encoder(json_file.file.read())
-    return run_simulation(request, input_json=json_content, queue="supply")
+    return run_simulation(request, input_json=json_content, queue=f"{model}")
 
 
 def run_simulation(request: Request, input_json=None, queue="supply") -> Response:
