@@ -77,7 +77,7 @@ async def simulate_json_variable(request: Request, queue: str = "supply"):
 
 
 @app.post("/uploadjson/{queue}")
-def simulate_uploaded_json_files_grid(
+def simulate_uploaded_json_files(
     request: Request, queue: str, json_file: UploadFile = File(...),
 ):
     """Receive mvs simulation parameter in json post request and send it to simulator
