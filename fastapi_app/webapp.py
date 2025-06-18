@@ -1,6 +1,8 @@
 import os
 import json
 import io
+
+import jsonschema.exceptions
 from fastapi import FastAPI, Request, Response, File, UploadFile, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -10,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.responses import JSONResponse
 import importlib.util
 from fastapi.responses import JSONResponse
-import os
+from jsonschema import validate
 
 try:
     from worker import app as celery_app
@@ -102,6 +104,14 @@ def run_simulation(request: Request, input_json=None, queue="supply") -> Respons
         }
     else:
         input_dict = json.loads(input_json)
+
+    # validate input against JSONSchema
+    variant = "input" if queue == "supply" else "default"
+    schema = json.loads(get_schema(queue, variant).body)
+    try:
+        validate(input_dict, schema)
+    except jsonschema.exceptions.ValidationError:
+        raise HTTPException(status_code=400, detail=f'Input did not validate against JSONSchema. Hint: You can check the expected JSON format using the "/schema/grid" and "/schema/supply/input" endpoints.')
 
     # send the task to celery
     task = celery_app.send_task(
