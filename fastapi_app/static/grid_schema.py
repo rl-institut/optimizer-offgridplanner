@@ -70,12 +70,13 @@ grid_schema = {
         },
         "grid_design": {
             "type": "object",
-            "required": ["distribution_cable", "connection_cable", "pole", "mg", "shs"],
+            "required": ["distribution_cable", "connection_cable", "pole", "mg"],
             "properties": {
                 "distribution_cable": {
                     "type": "object",
-                    "required": ["capex", "max_length", "epc"],
+                    "required": ["lifetime", "capex", "max_length", "epc"],
                     "properties": {
+                        "lifetime": {"type": "integer"},
                         "capex": {"type": "number"},
                         "max_length": {"type": "number"},
                         "epc": {"type": "number"},
@@ -83,8 +84,9 @@ grid_schema = {
                 },
                 "connection_cable": {
                     "type": "object",
-                    "required": ["capex", "max_length", "epc"],
+                    "required": ["lifetime", "capex", "max_length", "epc"],
                     "properties": {
+                        "lifetime": {"type": "integer"},
                         "capex": {"type": "number"},
                         "max_length": {"type": "number"},
                         "epc": {"type": "number"},
@@ -92,8 +94,9 @@ grid_schema = {
                 },
                 "pole": {
                     "type": "object",
-                    "required": ["capex", "max_n_connections", "epc"],
+                    "required": ["lifetime", "capex", "max_n_connections", "epc"],
                     "properties": {
+                        "lifetime": {"type": "integer"},
                         "capex": {"type": "number"},
                         "max_n_connections": {"type": "integer"},
                         "epc": {"type": "number"},
@@ -119,5 +122,4 @@ grid_schema = {
         },
         "yearly_demand": {"type": "number"},
     },
-    "additionalProperties": False,
 }
