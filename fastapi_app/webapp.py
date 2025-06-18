@@ -46,9 +46,9 @@ templates = Jinja2Templates(directory=os.path.join(SERVER_ROOT, "templates"))
 
 # Test Driven Development --> https://fastapi.tiangolo.com/tutorial/testing/
 
-def validate_optimization_model(model):
-    if model not in ["grid", "supply"]:
-        raise HTTPException(status_code=400, detail=f'{model} is not an accepted argument. Simulation options are "grid" or "supply"')
+def validate_simulation_queue(queue):
+    if queue not in ["grid", "supply"]:
+        raise HTTPException(status_code=400, detail=f'{queue} is not an accepted argument. Simulation options are "grid" or "supply"')
     return
 
 @app.get("/")
@@ -61,9 +61,10 @@ def index(request: Request) -> Response:
         },
     )
 
-
+@app.post("/sendjson/{queue}")
 async def simulate_json_variable(request: Request, queue: str = "supply"):
     """Receive mvs simulation parameter in json post request and send it to simulator"""
+    validate_simulation_queue(queue)
     input_dict = await request.json()
 
     # send the task to celery
@@ -75,23 +76,16 @@ async def simulate_json_variable(request: Request, queue: str = "supply"):
     return queue_answer
 
 
-@app.post("/sendjson/{model}")
-async def simulate_json_variable_grid(request: Request, model: str):
-    validate_optimization_model(model)
-    return await simulate_json_variable(request, queue=model)
-
-
-
-@app.post("/uploadjson/{model}")
+@app.post("/uploadjson/{queue}")
 def simulate_uploaded_json_files_grid(
-    request: Request, model: str, json_file: UploadFile = File(...),
+    request: Request, queue: str, json_file: UploadFile = File(...),
 ):
     """Receive mvs simulation parameter in json post request and send it to simulator
     the value of `name` property of the input html tag should be `json_file` as the second
     argument of this function
     """
     json_content = jsonable_encoder(json_file.file.read())
-    return run_simulation(request, input_json=json_content, queue=f"{model}")
+    return run_simulation(request, input_json=json_content, queue=f"{queue}")
 
 
 def run_simulation(request: Request, input_json=None, queue="supply") -> Response:
@@ -155,10 +149,10 @@ async def revoke_task(task_id: str) -> JSONResponse:
     return JSONResponse(content=jsonable_encoder({"task_id": task_id, "aborted": True}))
 
 
-@app.get("/schema/{model}")
-@app.get("/schema/{model}/{variant}")
-def get_schema(model: str, variant: str = "default"):
-    schema_file = f"{model}_schema"
+@app.get("/schema/{queue}")
+@app.get("/schema/{queue}/{variant}")
+def get_schema(queue: str, variant: str = "default"):
+    schema_file = f"{queue}_schema"
     schema_path = os.path.join(os.path.dirname(__file__), "static", f"{schema_file}.py")
 
     if not os.path.isfile(schema_path):
