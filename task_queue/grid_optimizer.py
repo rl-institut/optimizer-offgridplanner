@@ -105,9 +105,8 @@ class GridOptimizer:
         print("Initiating grid optimizer...")
         # TODO go through the helper functions and figure out what they do / document
         self.start_execution_time = time.monotonic()
-        # self.grid_opt_json = json.loads(grid_opt_json)
         self.grid_opt_json = grid_opt_json
-        self.nodes = pd.read_json(self.grid_opt_json["nodes"])
+        self.nodes = pd.DataFrame(self.grid_opt_json["nodes"])
         self.grid_design_dict = self.grid_opt_json["grid_design"]
         self.yearly_demand = self.grid_opt_json["yearly_demand"]
         self.nodes_df, self.power_house = self._query_nodes()
@@ -244,6 +243,7 @@ class GridOptimizer:
             axis=1,
         )
         nodes_df = nodes_df.round(decimals=6)
+        nodes_df = nodes_df.replace(np.nan, None)
         if not nodes_df.empty:
             nodes_df.latitude = nodes_df.latitude.map(lambda x: f"{x:.6f}")
             nodes_df.longitude = nodes_df.longitude.map(lambda x: f"{x:.6f}")
@@ -254,7 +254,7 @@ class GridOptimizer:
                         None,
                     )
 
-        return nodes_df.reset_index(drop=True).to_json()
+        return nodes_df.reset_index(drop=True).to_dict(orient="list")
 
     def _process_links(self):
         links_df = self.links.reset_index(drop=True)
@@ -275,8 +275,9 @@ class GridOptimizer:
         links_df.lon_from = links_df.lon_from.map(lambda x: f"{x:.6f}")
         links_df.lat_to = links_df.lat_to.map(lambda x: f"{x:.6f}")
         links_df.lon_to = links_df.lon_to.map(lambda x: f"{x:.6f}")
+        links_df = links_df.replace(np.nan, None)
 
-        return links_df.reset_index(drop=True).to_json()
+        return links_df.reset_index(drop=True).to_dict(orient="list")
 
     def _query_nodes(self):
         """

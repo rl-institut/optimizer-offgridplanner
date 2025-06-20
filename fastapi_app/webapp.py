@@ -1,12 +1,18 @@
 import os
 import json
 import io
-from fastapi import FastAPI, Request, Response, File, UploadFile
+
+import jsonschema.exceptions
+from fastapi import FastAPI, Request, Response, File, UploadFile, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
+import importlib.util
+from fastapi.responses import JSONResponse
+from jsonschema import validate
 
 try:
     from worker import app as celery_app
@@ -40,6 +46,10 @@ templates = Jinja2Templates(directory=os.path.join(SERVER_ROOT, "templates"))
 
 # Test Driven Development --> https://fastapi.tiangolo.com/tutorial/testing/
 
+def validate_simulation_queue(queue):
+    if queue not in ["grid", "supply"]:
+        raise HTTPException(status_code=400, detail=f'{queue} is not an accepted argument. Simulation options are "grid" or "supply"')
+    return
 
 @app.get("/")
 def index(request: Request) -> Response:
@@ -51,9 +61,10 @@ def index(request: Request) -> Response:
         },
     )
 
-
+@app.post("/sendjson/{queue}")
 async def simulate_json_variable(request: Request, queue: str = "supply"):
     """Receive mvs simulation parameter in json post request and send it to simulator"""
+    validate_simulation_queue(queue)
     input_dict = await request.json()
 
     # send the task to celery
@@ -65,38 +76,16 @@ async def simulate_json_variable(request: Request, queue: str = "supply"):
     return queue_answer
 
 
-@app.post("/sendjson/grid")
-async def simulate_json_variable_grid(request: Request):
-    return await simulate_json_variable(request, queue="grid")
-
-
-@app.post("/sendjson/supply")
-async def simulate_json_variable_supply(request: Request):
-    return await simulate_json_variable(request, queue="supply")
-
-
-@app.post("/uploadjson/grid")
-def simulate_uploaded_json_files_grid(
-    request: Request, json_file: UploadFile = File(...)
+@app.post("/uploadjson/{queue}")
+def simulate_uploaded_json_files(
+    request: Request, queue: str, json_file: UploadFile = File(...),
 ):
     """Receive mvs simulation parameter in json post request and send it to simulator
     the value of `name` property of the input html tag should be `json_file` as the second
     argument of this function
     """
     json_content = jsonable_encoder(json_file.file.read())
-    return run_simulation(request, input_json=json_content, queue="grid")
-
-
-@app.post("/uploadjson/supply")
-def simulate_uploaded_json_files_supply(
-    request: Request, json_file: UploadFile = File(...)
-):
-    """Receive mvs simulation parameter in json post request and send it to simulator
-    the value of `name` property of the input html tag should be `json_file` as the second
-    argument of this function
-    """
-    json_content = jsonable_encoder(json_file.file.read())
-    return run_simulation(request, input_json=json_content, queue="supply")
+    return run_simulation(request, input_json=json_content, queue=f"{queue}")
 
 
 def run_simulation(request: Request, input_json=None, queue="supply") -> Response:
@@ -109,6 +98,14 @@ def run_simulation(request: Request, input_json=None, queue="supply") -> Respons
         }
     else:
         input_dict = json.loads(input_json)
+
+    # validate input against JSONSchema
+    variant = "input" if queue == "supply" else "default"
+    schema = json.loads(get_schema(queue, variant).body)
+    try:
+        validate(input_dict, schema)
+    except jsonschema.exceptions.ValidationError:
+        raise HTTPException(status_code=400, detail=f'Input did not validate against JSONSchema. Hint: You can check the expected JSON format using the "/schema/grid" and "/schema/supply/input" endpoints.')
 
     # send the task to celery
     task = celery_app.send_task(
@@ -150,3 +147,31 @@ async def revoke_task(task_id: str) -> JSONResponse:
     res = celery_app.AsyncResult(task_id)
     res.revoke(terminate=True)
     return JSONResponse(content=jsonable_encoder({"task_id": task_id, "aborted": True}))
+
+
+@app.get("/schema/{queue}")
+@app.get("/schema/{queue}/{variant}")
+def get_schema(queue: str, variant: str = "default"):
+    schema_file = f"{queue}_schema"
+    schema_path = os.path.join(os.path.dirname(__file__), "static", f"{schema_file}.py")
+
+    if not os.path.isfile(schema_path):
+        raise HTTPException(status_code=404, detail=f"Schema file '{schema_file}' not found")
+
+    try:
+        spec = importlib.util.spec_from_file_location(schema_file, schema_path)
+        schema_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(schema_module)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error while loading the module: {e}")
+
+    if variant == "default":
+        schema_var = schema_file
+    else:
+        schema_var = f"{schema_file}_{variant}"
+
+    if not hasattr(schema_module, schema_var):
+        raise HTTPException(status_code=404, detail=f"Schema variable '{schema_var}' not found in {schema_file}")
+
+    return JSONResponse(content=getattr(schema_module, schema_var))
+

@@ -51,6 +51,7 @@ import numpy as np
 import pandas as pd
 import pyomo.environ as po
 from oemof import solph
+from datetime import datetime
 
 SOLVER_NAME = "cbc"
 # from offgridplanner.optimization.models import DemandCoverage
@@ -101,8 +102,16 @@ class EnergySystemOptimizer:
         self.rectifier = energy_system_design["rectifier"]
         self.shortage = energy_system_design["shortage"]
         self.fuel_density_diesel = 0.846
-        self.dt_index = pd.DatetimeIndex(
-            pd.to_datetime(supply_opt_sequences["index"]), freq="h"
+        # Reconstruct timestamp index from passed parameters
+        index_params = supply_opt_sequences["index"]
+        start_datetime = datetime.strptime(index_params["start_date"], "%Y-%m-%dT%H:%M:%S")
+        freq = index_params["freq"]
+        n_days = index_params["n_days"]
+        self.dt_index = pd.date_range(
+            start_datetime,
+            start_datetime + pd.to_timedelta(n_days, unit="D"),
+            freq=freq,
+            inclusive="left",
         )
         self.demand = pd.Series(supply_opt_sequences["demand"], index=self.dt_index)
         self.solar_potential = pd.Series(
