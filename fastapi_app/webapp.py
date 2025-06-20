@@ -100,8 +100,7 @@ def run_simulation(request: Request, input_json=None, queue="supply") -> Respons
         input_dict = json.loads(input_json)
 
     # validate input against JSONSchema
-    variant = "input" if queue == "supply" else "default"
-    schema = json.loads(get_schema(queue, variant).body)
+    schema = json.loads(get_schema(queue, "input").body)
     try:
         validate(input_dict, schema)
     except jsonschema.exceptions.ValidationError:
