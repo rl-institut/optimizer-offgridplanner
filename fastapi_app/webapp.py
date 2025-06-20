@@ -105,7 +105,7 @@ def run_simulation(request: Request, input_json=None, queue="supply") -> Respons
     try:
         validate(input_dict, schema)
     except jsonschema.exceptions.ValidationError:
-        raise HTTPException(status_code=400, detail=f'Input did not validate against JSONSchema. Hint: You can check the expected JSON format using the "/schema/grid" and "/schema/supply/input" endpoints.')
+        raise HTTPException(status_code=400, detail=f'Input did not validate against JSONSchema. Hint: You can check the expected JSON format using the "/schema/grid/input" and "/schema/supply/input" endpoints.')
 
     # send the task to celery
     task = celery_app.send_task(
@@ -149,9 +149,8 @@ async def revoke_task(task_id: str) -> JSONResponse:
     return JSONResponse(content=jsonable_encoder({"task_id": task_id, "aborted": True}))
 
 
-@app.get("/schema/{queue}")
 @app.get("/schema/{queue}/{variant}")
-def get_schema(queue: str, variant: str = "default"):
+def get_schema(queue: str, variant: str):
     schema_file = f"{queue}_schema"
     schema_path = os.path.join(os.path.dirname(__file__), "static", f"{schema_file}.py")
 
@@ -165,10 +164,7 @@ def get_schema(queue: str, variant: str = "default"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error while loading the module: {e}")
 
-    if variant == "default":
-        schema_var = schema_file
-    else:
-        schema_var = f"{schema_file}_{variant}"
+    schema_var = f"{schema_file}_{variant}"
 
     if not hasattr(schema_module, schema_var):
         raise HTTPException(status_code=404, detail=f"Schema variable '{schema_var}' not found in {schema_file}")
