@@ -42,7 +42,27 @@ to get the logs messages of the `web` service of the docker-compose.yml file
 
 Run `sudo docker-compose down` to shut the services down.
 
-### API calls
+## API calls
+
+### GET `/schema/{queue}/{variant}`
+
+This endpoint returns a predefined JSON schema for a specific queue variant. The schemas are stored as Python files in the `static/` directory.
+
+#### Path parameters:
+
+- `queue`: one of `supply` or `grid`
+- `variant`: one of `input` or `output`
+
+The server looks for a file named `{queue}_schema.py` and loads a variable named `{queue}_schema_{variant}` from it.
+
+#### Error cases:
+- **404**: If the file or the corresponding variable does not exist  
+- **500**: If an error occurs while loading the file
+
+#### Use case:
+Useful for validating incoming and outgoing JSON files.
+
+### API Request and Response Formats for `/sendjson` and `/check`
 The json file for the POST request `/sendjson/supply` is structured as follow
 ```
 supply_opt_json = {
