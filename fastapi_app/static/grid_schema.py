@@ -43,7 +43,7 @@ grid_schema_input = {
                 },
                 "shs_options": {
                     "type": "array",
-                    "items": {"type": "number"},
+                    "items": {"type": ["integer", "null"]},
                 },
                 "consumer_detail": {
                     "type": "array",
@@ -55,11 +55,11 @@ grid_schema_input = {
                 },
                 "distance_to_load_center": {
                     "type": "array",
-                    "items": {"type": "number"},
+                    "items": {"type": ["number", "null"]},
                 },
                 "distribution_cost": {
                     "type": "array",
-                    "items": {"type": "number"},
+                    "items": {"type": ["number", "null"]},
                 },
                 "parent": {
                     "type": "array",
