@@ -222,7 +222,7 @@ class GridOptimizer:
         return results
 
     def _process_nodes(self):
-        nodes_df = self.nodes.reset_index(drop=True)
+        nodes_df = self.nodes.reset_index(names=["label"])
         nodes_df = nodes_df.drop(
             labels=[
                 "x",
@@ -257,7 +257,7 @@ class GridOptimizer:
         return nodes_df.reset_index(drop=True).to_dict(orient="list")
 
     def _process_links(self):
-        links_df = self.links.reset_index(drop=True)
+        links_df = self.links.reset_index(names=["label"])
         links_df = links_df.drop(
             labels=[
                 "x_from",
@@ -266,8 +266,6 @@ class GridOptimizer:
                 "y_to",
                 "n_consumers",
                 "total_power",
-                "from_node",
-                "to_node",
             ],
             axis=1,
         )
@@ -694,8 +692,8 @@ class GridOptimizer:
         self.links.loc[label, "length"] = length
         self.links.loc[label, "n_consumers"] = 0
         self.links.loc[label, "total_power"] = 0
-        self.links.loc[label, "from_node"] = ""
-        self.links.loc[label, "to_node"] = ""
+        self.links.loc[label, "from_node"] = label_node_from
+        self.links.loc[label, "to_node"] = label_node_to
 
     def total_length_distribution_cable(self):
         """
