@@ -1398,6 +1398,31 @@ class GridOptimizer:
             mask,
             ["to_node", "from_node"],
         ].to_numpy()
+
+        # Rebuild indexes to match final from/to relationships
+        links.index = pd.Index(
+            [f"({f}, {t})" for f, t in links[["from_node", "to_node"]].to_numpy()],
+            name="label",
+        )
+
+        # Sync endpoint coordinates with the final from/to nodes ---
+        node_lat = self.nodes["latitude"]
+        node_lon = self.nodes["longitude"]
+        node_x = self.nodes["x"]
+        node_y = self.nodes["y"]
+
+        # from_* columns
+        links["lat_from"] = links["from_node"].map(node_lat)
+        links["lon_from"] = links["from_node"].map(node_lon)
+        links["x_from"] = links["from_node"].map(node_x)
+        links["y_from"] = links["from_node"].map(node_y)
+
+        # to_* columns
+        links["lat_to"] = links["to_node"].map(node_lat)
+        links["lon_to"] = links["to_node"].map(node_lon)
+        links["x_to"] = links["to_node"].map(node_x)
+        links["y_to"] = links["to_node"].map(node_y)
+
         self.links = links.copy(deep=True)
         self.distribution_links = self.links[links["link_type"] == "distribution"].copy()
 
