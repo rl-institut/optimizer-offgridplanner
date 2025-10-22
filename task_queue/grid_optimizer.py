@@ -222,7 +222,7 @@ class GridOptimizer:
         return results
 
     def _process_nodes(self):
-        nodes_df = self.nodes.reset_index(drop=True)
+        nodes_df = self.nodes.reset_index(names=["label"])
         nodes_df = nodes_df.drop(
             labels=[
                 "x",
@@ -257,7 +257,7 @@ class GridOptimizer:
         return nodes_df.reset_index(drop=True).to_dict(orient="list")
 
     def _process_links(self):
-        links_df = self.links.reset_index(drop=True)
+        links_df = self.links.reset_index(names=["label"])
         links_df = links_df.drop(
             labels=[
                 "x_from",
@@ -266,8 +266,6 @@ class GridOptimizer:
                 "y_to",
                 "n_consumers",
                 "total_power",
-                "from_node",
-                "to_node",
             ],
             axis=1,
         )
@@ -694,8 +692,8 @@ class GridOptimizer:
         self.links.loc[label, "length"] = length
         self.links.loc[label, "n_consumers"] = 0
         self.links.loc[label, "total_power"] = 0
-        self.links.loc[label, "from_node"] = ""
-        self.links.loc[label, "to_node"] = ""
+        self.links.loc[label, "from_node"] = label_node_from
+        self.links.loc[label, "to_node"] = label_node_to
 
     def total_length_distribution_cable(self):
         """
@@ -1400,6 +1398,31 @@ class GridOptimizer:
             mask,
             ["to_node", "from_node"],
         ].to_numpy()
+
+        # Rebuild indexes to match final from/to relationships
+        links.index = pd.Index(
+            [f"({f}, {t})" for f, t in links[["from_node", "to_node"]].to_numpy()],
+            name="label",
+        )
+
+        # Sync endpoint coordinates with the final from/to nodes ---
+        node_lat = self.nodes["latitude"]
+        node_lon = self.nodes["longitude"]
+        node_x = self.nodes["x"]
+        node_y = self.nodes["y"]
+
+        # from_* columns
+        links["lat_from"] = links["from_node"].map(node_lat)
+        links["lon_from"] = links["from_node"].map(node_lon)
+        links["x_from"] = links["from_node"].map(node_x)
+        links["y_from"] = links["from_node"].map(node_y)
+
+        # to_* columns
+        links["lat_to"] = links["to_node"].map(node_lat)
+        links["lon_to"] = links["to_node"].map(node_lon)
+        links["x_to"] = links["to_node"].map(node_x)
+        links["y_to"] = links["to_node"].map(node_y)
+
         self.links = links.copy(deep=True)
         self.distribution_links = self.links[links["link_type"] == "distribution"].copy()
 
