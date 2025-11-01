@@ -367,16 +367,17 @@ class GridOptimizer:
 
     def _connect_power_house_consumer_manually(self, max_length):
         power_house = self.nodes.loc[self.nodes["node_type"] == "power-house"]
+        consumer_nodes = self.nodes[self.nodes["node_type"] == "consumer"]
         self.convert_lonlat_xy()
         x2 = power_house["x"].to_numpy()[0]
         y2 = power_house["y"].to_numpy()[0]
-        for consumer in self.nodes[self.nodes["node_type"] == "consumer"].index:
+        for consumer in consumer_nodes.index:
             x1 = self.nodes.x.loc[consumer]
             y1 = self.nodes.y.loc[consumer]
             distance = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
             self.nodes.loc[consumer, "distance_to_load_center"] = distance
-        consumers = self.nodes[
-            self.nodes["distance_to_load_center"] <= max_length
+        consumers = consumer_nodes[
+            consumer_nodes["distance_to_load_center"] <= max_length
         ].copy()
         if len(consumers) > 0:
             self.nodes = self.nodes.drop(index=consumers.index)
