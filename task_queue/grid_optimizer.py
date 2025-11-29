@@ -998,10 +998,18 @@ class GridOptimizer:
         ].index
         for consumer in grid_consumers:
             parent_pole = self.nodes[self.nodes.index == consumer]["parent"].iloc[0]
-            length = min(
-                links[
+            link = links[
                     (links["from_node"] == consumer) & (links["to_node"] == parent_pole)
-                ]["length"].iloc[0],
+                ]
+
+            # If link is not found, try it the other way around
+            if len(link) == 0:
+                link = links[
+                    (links["from_node"] == parent_pole) & (links["to_node"] == consumer)
+                    ]
+
+            length = min(
+                link["length"].iloc[0],
                 3,
             )
             connection_cost = (
