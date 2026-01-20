@@ -138,37 +138,38 @@ class EnergySystemOptimizer:
         b_fuel = solph.Bus(label="fuel")
         # -------------------- PV --------------------
         # Make decision about different simulation modes of the PV
-        if self.pv["settings"]["is_selected"] is False:
+        if self.pv["settings"]["is_selected"]:
+            if self.pv["settings"]["design"]:
+                # DESIGN
+                pv = solph.components.Source(
+                    label="pv",
+                    outputs={
+                        b_el_dc: solph.Flow(
+                            fix=self.solar_potential / self.solar_potential_peak,
+                            nominal_value=None,
+                            investment=solph.Investment(
+                                ep_costs=self.pv["parameters"]["epc"],
+                            ),
+                            variable_costs=0,
+                        ),
+                    },
+                )
+            else:
+                # DISPATCH
+                pv = solph.components.Source(
+                    label="pv",
+                    outputs={
+                        b_el_dc: solph.Flow(
+                            fix=self.solar_potential / self.solar_potential_peak,
+                            nominal_value=self.pv["parameters"]["nominal_capacity"],
+                            variable_costs=0,
+                        ),
+                    },
+                )
+        else:
             pv = solph.components.Source(
                 label="pv",
                 outputs={b_el_dc: solph.Flow(nominal_value=0)},
-            )
-        elif self.pv["settings"]["design"] is True:
-            # DESIGN
-            pv = solph.components.Source(
-                label="pv",
-                outputs={
-                    b_el_dc: solph.Flow(
-                        fix=self.solar_potential / self.solar_potential_peak,
-                        nominal_value=None,
-                        investment=solph.Investment(
-                            ep_costs=self.pv["parameters"]["epc"],
-                        ),
-                        variable_costs=0,
-                    ),
-                },
-            )
-        else:
-            # DISPATCH
-            pv = solph.components.Source(
-                label="pv",
-                outputs={
-                    b_el_dc: solph.Flow(
-                        fix=self.solar_potential / self.solar_potential_peak,
-                        nominal_value=self.pv["parameters"]["nominal_capacity"],
-                        variable_costs=0,
-                    ),
-                },
             )
 
         # -------------------- DIESEL GENSET --------------------
@@ -183,49 +184,63 @@ class EnergySystemOptimizer:
             outputs={b_fuel: solph.Flow(variable_costs=fuel_cost)},
         )
         # optimize capacity of the fuel generator
-        if self.diesel_genset["settings"]["is_selected"] is False:
-            diesel_genset = solph.components.Transformer(
-                label="diesel_genset",
-                inputs={b_fuel: solph.Flow()},
-                outputs={b_el_ac: solph.Flow(nominal_value=0)},
-            )
-        elif self.diesel_genset["settings"]["design"] is True:
-            # DESIGN
-            if self.diesel_genset["settings"]["offset"] is True:
-                diesel_genset = solph.components.Transformer(
-                    label="diesel_genset",
-                    inputs={b_fuel: solph.flows.Flow()},
-                    outputs={
-                        b_el_ac: solph.flows.Flow(
-                            nominal_value=None,
-                            variable_costs=self.diesel_genset["parameters"][
-                                "variable_cost"
-                            ],
-                            min=self.diesel_genset["parameters"]["min_load"],
-                            max=1,
-                            nonconvex=solph.NonConvex(),
-                            investment=solph.Investment(
-                                ep_costs=self.diesel_genset["parameters"]["epc"],
+        if self.diesel_genset["settings"]["is_selected"]:
+            if self.diesel_genset["settings"]["design"]:
+                # DESIGN
+                if self.diesel_genset["settings"]["offset"] is True:
+                    diesel_genset = solph.components.Transformer(
+                        label="diesel_genset",
+                        inputs={b_fuel: solph.flows.Flow()},
+                        outputs={
+                            b_el_ac: solph.flows.Flow(
+                                nominal_value=None,
+                                variable_costs=self.diesel_genset["parameters"][
+                                    "variable_cost"
+                                ],
+                                min=self.diesel_genset["parameters"]["min_load"],
+                                max=1,
+                                nonconvex=solph.NonConvex(),
+                                investment=solph.Investment(
+                                    ep_costs=self.diesel_genset["parameters"]["epc"],
+                                ),
                             ),
-                        ),
-                    },
-                    conversion_factors={
-                        b_el_ac: self.diesel_genset["parameters"]["max_efficiency"],
-                    },
-                )
+                        },
+                        conversion_factors={
+                            b_el_ac: self.diesel_genset["parameters"]["max_efficiency"],
+                        },
+                    )
+                else:
+                    diesel_genset = solph.components.Transformer(
+                        label="diesel_genset",
+                        inputs={b_fuel: solph.Flow()},
+                        outputs={
+                            b_el_ac: solph.Flow(
+                                nominal_value=None,
+                                variable_costs=self.diesel_genset["parameters"][
+                                    "variable_cost"
+                                ],
+                                investment=solph.Investment(
+                                    ep_costs=self.diesel_genset["parameters"]["epc"],
+                                ),
+                            ),
+                        },
+                        conversion_factors={
+                            b_el_ac: self.diesel_genset["parameters"]["max_efficiency"],
+                        },
+                    )
             else:
+                # DISPATCH
                 diesel_genset = solph.components.Transformer(
                     label="diesel_genset",
                     inputs={b_fuel: solph.Flow()},
                     outputs={
                         b_el_ac: solph.Flow(
-                            nominal_value=None,
+                            nominal_value=self.diesel_genset["parameters"][
+                                "nominal_capacity"
+                            ],
                             variable_costs=self.diesel_genset["parameters"][
                                 "variable_cost"
                             ],
-                            investment=solph.Investment(
-                                ep_costs=self.diesel_genset["parameters"]["epc"],
-                            ),
                         ),
                     },
                     conversion_factors={
@@ -233,155 +248,147 @@ class EnergySystemOptimizer:
                     },
                 )
         else:
-            # DISPATCH
             diesel_genset = solph.components.Transformer(
                 label="diesel_genset",
                 inputs={b_fuel: solph.Flow()},
-                outputs={
-                    b_el_ac: solph.Flow(
-                        nominal_value=self.diesel_genset["parameters"][
-                            "nominal_capacity"
-                        ],
-                        variable_costs=self.diesel_genset["parameters"][
-                            "variable_cost"
-                        ],
-                    ),
-                },
-                conversion_factors={
-                    b_el_ac: self.diesel_genset["parameters"]["max_efficiency"],
-                },
+                outputs={b_el_ac: solph.Flow(nominal_value=0)},
             )
 
         # -------------------- RECTIFIER --------------------
 
-        if self.rectifier["settings"]["is_selected"] is False:
+        if self.rectifier["settings"]["is_selected"]:
+            if self.rectifier["settings"]["design"]:
+                # DESIGN
+                rectifier = solph.components.Transformer(
+                    label="rectifier",
+                    inputs={
+                        b_el_ac: solph.Flow(
+                            nominal_value=None,
+                            investment=solph.Investment(
+                                ep_costs=self.rectifier["parameters"]["epc"],
+                            ),
+                            variable_costs=0,
+                        ),
+                    },
+                    outputs={b_el_dc: solph.Flow()},
+                    conversion_factors={
+                        b_el_dc: self.rectifier["parameters"]["efficiency"],
+                    },
+                )
+            else:
+                # DISPATCH
+                rectifier = solph.components.Transformer(
+                    label="rectifier",
+                    inputs={
+                        b_el_ac: solph.Flow(
+                            nominal_value=self.rectifier["parameters"]["nominal_capacity"],
+                            variable_costs=0,
+                        ),
+                    },
+                    outputs={b_el_dc: solph.Flow()},
+                    conversion_factors={
+                        b_el_dc: self.rectifier["parameters"]["efficiency"],
+                    },
+                )
+        else:
             rectifier = solph.components.Transformer(
                 label="rectifier",
                 inputs={b_el_ac: solph.Flow(nominal_value=0)},
                 outputs={b_el_dc: solph.Flow()},
             )
-        elif self.rectifier["settings"]["design"] is True:
-            # DESIGN
-            rectifier = solph.components.Transformer(
-                label="rectifier",
-                inputs={
-                    b_el_ac: solph.Flow(
-                        nominal_value=None,
-                        investment=solph.Investment(
-                            ep_costs=self.rectifier["parameters"]["epc"],
-                        ),
-                        variable_costs=0,
-                    ),
-                },
-                outputs={b_el_dc: solph.Flow()},
-                conversion_factors={
-                    b_el_dc: self.rectifier["parameters"]["efficiency"],
-                },
-            )
-        else:
-            # DISPATCH
-            rectifier = solph.components.Transformer(
-                label="rectifier",
-                inputs={
-                    b_el_ac: solph.Flow(
-                        nominal_value=self.rectifier["parameters"]["nominal_capacity"],
-                        variable_costs=0,
-                    ),
-                },
-                outputs={b_el_dc: solph.Flow()},
-                conversion_factors={
-                    b_el_dc: self.rectifier["parameters"]["efficiency"],
-                },
-            )
 
         # -------------------- INVERTER --------------------
-        if self.inverter["settings"]["is_selected"] is False:
+        if self.inverter["settings"]["is_selected"]:
+            if self.inverter["settings"]["design"]:
+                # DESIGN
+                inverter = solph.components.Transformer(
+                    label="inverter",
+                    inputs={
+                        b_el_dc: solph.Flow(
+                            nominal_value=None,
+                            investment=solph.Investment(
+                                ep_costs=self.inverter["parameters"]["epc"],
+                            ),
+                            variable_costs=0,
+                        ),
+                    },
+                    outputs={b_el_ac: solph.Flow()},
+                    conversion_factors={
+                        b_el_ac: self.inverter["parameters"]["efficiency"],
+                    },
+                )
+            else:
+                # DISPATCH
+                inverter = solph.components.Transformer(
+                    label="inverter",
+                    inputs={
+                        b_el_dc: solph.Flow(
+                            nominal_value=self.inverter["parameters"]["nominal_capacity"],
+                            variable_costs=0,
+                        ),
+                    },
+                    outputs={b_el_ac: solph.Flow()},
+                    conversion_factors={
+                        b_el_ac: self.inverter["parameters"]["efficiency"],
+                    },
+                )
+        else:
             inverter = solph.components.Transformer(
                 label="inverter",
                 inputs={b_el_dc: solph.Flow(nominal_value=0)},
                 outputs={b_el_ac: solph.Flow()},
             )
-        elif self.inverter["settings"]["design"] is True:
-            # DESIGN
-            inverter = solph.components.Transformer(
-                label="inverter",
-                inputs={
-                    b_el_dc: solph.Flow(
-                        nominal_value=None,
-                        investment=solph.Investment(
-                            ep_costs=self.inverter["parameters"]["epc"],
-                        ),
-                        variable_costs=0,
-                    ),
-                },
-                outputs={b_el_ac: solph.Flow()},
-                conversion_factors={
-                    b_el_ac: self.inverter["parameters"]["efficiency"],
-                },
-            )
-        else:
-            # DISPATCH
-            inverter = solph.components.Transformer(
-                label="inverter",
-                inputs={
-                    b_el_dc: solph.Flow(
-                        nominal_value=self.inverter["parameters"]["nominal_capacity"],
-                        variable_costs=0,
-                    ),
-                },
-                outputs={b_el_ac: solph.Flow()},
-                conversion_factors={
-                    b_el_ac: self.inverter["parameters"]["efficiency"],
-                },
-            )
+
 
         # -------------------- BATTERY --------------------
-        if self.battery["settings"]["is_selected"] is False:
+        if self.battery["settings"]["is_selected"]:
+            if self.battery["settings"]["design"]:
+                # DESIGN
+                battery = solph.components.GenericStorage(
+                    label="battery",
+                    nominal_storage_capacity=None,
+                    investment=solph.Investment(
+                        ep_costs=self.battery["parameters"]["epc"],
+                    ),
+                    inputs={b_el_dc: solph.Flow(variable_costs=0)},
+                    outputs={b_el_dc: solph.Flow(investment=solph.Investment(ep_costs=0))},
+                    initial_storage_level=self.battery["parameters"]["soc_max"],
+                    min_storage_level=self.battery["parameters"]["soc_min"],
+                    max_storage_level=self.battery["parameters"]["soc_max"],
+                    balanced=False,
+                    inflow_conversion_factor=self.battery["parameters"]["efficiency"],
+                    outflow_conversion_factor=self.battery["parameters"]["efficiency"],
+                    invest_relation_input_capacity=self.battery["parameters"]["c_rate_in"],
+                    invest_relation_output_capacity=self.battery["parameters"][
+                        "c_rate_out"
+                    ],
+                )
+            else:
+                # DISPATCH
+                battery = solph.components.GenericStorage(
+                    label="battery",
+                    nominal_storage_capacity=self.battery["parameters"]["nominal_capacity"],
+                    inputs={b_el_dc: solph.Flow(variable_costs=0)},
+                    outputs={b_el_dc: solph.Flow()},
+                    initial_storage_level=self.battery["parameters"]["soc_max"],
+                    min_storage_level=self.battery["parameters"]["soc_min"],
+                    max_storage_level=self.battery["parameters"]["soc_max"],
+                    balanced=True,
+                    inflow_conversion_factor=self.battery["parameters"]["efficiency"],
+                    outflow_conversion_factor=self.battery["parameters"]["efficiency"],
+                    invest_relation_input_capacity=self.battery["parameters"]["c_rate_in"],
+                    invest_relation_output_capacity=self.battery["parameters"][
+                        "c_rate_out"
+                    ],
+                )
+        else:
             battery = solph.components.GenericStorage(
                 label="battery",
                 nominal_storage_capacity=0,
                 inputs={b_el_dc: solph.Flow()},
                 outputs={b_el_dc: solph.Flow()},
             )
-        elif self.battery["settings"]["design"] is True:
-            # DESIGN
-            battery = solph.components.GenericStorage(
-                label="battery",
-                nominal_storage_capacity=None,
-                investment=solph.Investment(
-                    ep_costs=self.battery["parameters"]["epc"],
-                ),
-                inputs={b_el_dc: solph.Flow(variable_costs=0)},
-                outputs={b_el_dc: solph.Flow(investment=solph.Investment(ep_costs=0))},
-                initial_storage_level=self.battery["parameters"]["soc_max"],
-                min_storage_level=self.battery["parameters"]["soc_min"],
-                max_storage_level=self.battery["parameters"]["soc_max"],
-                balanced=False,
-                inflow_conversion_factor=self.battery["parameters"]["efficiency"],
-                outflow_conversion_factor=self.battery["parameters"]["efficiency"],
-                invest_relation_input_capacity=self.battery["parameters"]["c_rate_in"],
-                invest_relation_output_capacity=self.battery["parameters"][
-                    "c_rate_out"
-                ],
-            )
-        else:
-            # DISPATCH
-            battery = solph.components.GenericStorage(
-                label="battery",
-                nominal_storage_capacity=self.battery["parameters"]["nominal_capacity"],
-                inputs={b_el_dc: solph.Flow(variable_costs=0)},
-                outputs={b_el_dc: solph.Flow()},
-                initial_storage_level=self.battery["parameters"]["soc_max"],
-                min_storage_level=self.battery["parameters"]["soc_min"],
-                max_storage_level=self.battery["parameters"]["soc_max"],
-                balanced=True,
-                inflow_conversion_factor=self.battery["parameters"]["efficiency"],
-                outflow_conversion_factor=self.battery["parameters"]["efficiency"],
-                invest_relation_input_capacity=self.battery["parameters"]["c_rate_in"],
-                invest_relation_output_capacity=self.battery["parameters"][
-                    "c_rate_out"
-                ],
-            )
+
 
         # -------------------- DEMAND --------------------
         demand_el = solph.components.Sink(
