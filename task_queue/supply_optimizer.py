@@ -255,89 +255,51 @@ class EnergySystemOptimizer:
             )
 
         # -------------------- RECTIFIER --------------------
-
-        if self.rectifier["settings"]["is_selected"]:
-            if self.rectifier["settings"]["design"]:
-                # DESIGN
-                rectifier = solph.components.Transformer(
-                    label="rectifier",
-                    inputs={
-                        b_el_ac: solph.Flow(
-                            nominal_value=None,
-                            investment=solph.Investment(
-                                ep_costs=self.rectifier["parameters"]["epc"],
+        def _build_generic_transformer(label, transformer_dict, bus_in, bus_out):
+            if transformer_dict["settings"]["is_selected"]:
+                if transformer_dict["settings"]["design"]:
+                    # DESIGN
+                    transformer = solph.components.Transformer(
+                        label=label,
+                        inputs={
+                            bus_in: solph.Flow(
+                                nominal_value=None,
+                                investment=solph.Investment(
+                                    ep_costs=transformer_dict["parameters"]["epc"],
+                                ),
+                                variable_costs=0,
                             ),
-                            variable_costs=0,
-                        ),
-                    },
-                    outputs={b_el_dc: solph.Flow()},
-                    conversion_factors={
-                        b_el_dc: self.rectifier["parameters"]["efficiency"],
-                    },
-                )
-            else:
-                # DISPATCH
-                rectifier = solph.components.Transformer(
-                    label="rectifier",
-                    inputs={
-                        b_el_ac: solph.Flow(
-                            nominal_value=self.rectifier["parameters"]["nominal_capacity"],
-                            variable_costs=0,
-                        ),
-                    },
-                    outputs={b_el_dc: solph.Flow()},
-                    conversion_factors={
-                        b_el_dc: self.rectifier["parameters"]["efficiency"],
-                    },
-                )
-        else:
-            rectifier = solph.components.Transformer(
-                label="rectifier",
-                inputs={b_el_ac: solph.Flow(nominal_value=0)},
-                outputs={b_el_dc: solph.Flow()},
-            )
-
-        # -------------------- INVERTER --------------------
-        if self.inverter["settings"]["is_selected"]:
-            if self.inverter["settings"]["design"]:
-                # DESIGN
-                inverter = solph.components.Transformer(
-                    label="inverter",
-                    inputs={
-                        b_el_dc: solph.Flow(
-                            nominal_value=None,
-                            investment=solph.Investment(
-                                ep_costs=self.inverter["parameters"]["epc"],
+                        },
+                        outputs={bus_out: solph.Flow()},
+                        conversion_factors={
+                            bus_out: transformer_dict["parameters"]["efficiency"],
+                        },
+                    )
+                else:
+                    # DISPATCH
+                    transformer = solph.components.Transformer(
+                        label=label,
+                        inputs={
+                            bus_in: solph.Flow(
+                                nominal_value=transformer_dict["parameters"]["nominal_capacity"],
+                                variable_costs=0,
                             ),
-                            variable_costs=0,
-                        ),
-                    },
-                    outputs={b_el_ac: solph.Flow()},
-                    conversion_factors={
-                        b_el_ac: self.inverter["parameters"]["efficiency"],
-                    },
-                )
+                        },
+                        outputs={bus_out: solph.Flow()},
+                        conversion_factors={
+                            bus_out: transformer_dict["parameters"]["efficiency"],
+                        },
+                    )
             else:
-                # DISPATCH
-                inverter = solph.components.Transformer(
-                    label="inverter",
-                    inputs={
-                        b_el_dc: solph.Flow(
-                            nominal_value=self.inverter["parameters"]["nominal_capacity"],
-                            variable_costs=0,
-                        ),
-                    },
-                    outputs={b_el_ac: solph.Flow()},
-                    conversion_factors={
-                        b_el_ac: self.inverter["parameters"]["efficiency"],
-                    },
+                transformer = solph.components.Transformer(
+                    label=label,
+                    inputs={bus_in: solph.Flow(nominal_value=0)},
+                    outputs={bus_out: solph.Flow()},
                 )
-        else:
-            inverter = solph.components.Transformer(
-                label="inverter",
-                inputs={b_el_dc: solph.Flow(nominal_value=0)},
-                outputs={b_el_ac: solph.Flow()},
-            )
+            return transformer
+
+        rectifier = _build_generic_transformer("rectifier", self.rectifier, bus_in=b_el_ac, bus_out=b_el_dc)
+        inverter = _build_generic_transformer("inverter", self.inverter, bus_in=b_el_dc, bus_out=b_el_ac)
 
 
         # -------------------- BATTERY --------------------
