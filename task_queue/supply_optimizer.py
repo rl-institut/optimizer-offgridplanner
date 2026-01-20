@@ -303,54 +303,57 @@ class EnergySystemOptimizer:
 
 
         # -------------------- BATTERY --------------------
-        if self.battery["settings"]["is_selected"]:
-            if self.battery["settings"]["design"]:
-                # DESIGN
-                battery = solph.components.GenericStorage(
-                    label="battery",
-                    nominal_storage_capacity=None,
-                    investment=solph.Investment(
-                        ep_costs=self.battery["parameters"]["epc"],
-                    ),
-                    inputs={b_el_dc: solph.Flow(variable_costs=0)},
-                    outputs={b_el_dc: solph.Flow(investment=solph.Investment(ep_costs=0))},
-                    initial_storage_level=self.battery["parameters"]["soc_max"],
-                    min_storage_level=self.battery["parameters"]["soc_min"],
-                    max_storage_level=self.battery["parameters"]["soc_max"],
-                    balanced=False,
-                    inflow_conversion_factor=self.battery["parameters"]["efficiency"],
-                    outflow_conversion_factor=self.battery["parameters"]["efficiency"],
-                    invest_relation_input_capacity=self.battery["parameters"]["c_rate_in"],
-                    invest_relation_output_capacity=self.battery["parameters"][
-                        "c_rate_out"
-                    ],
-                )
+        def _build_generic_storage(label, storage_dict, bus_in, bus_out):
+            if storage_dict["settings"]["is_selected"]:
+                if storage_dict["settings"]["design"]:
+                    # DESIGN
+                    storage = solph.components.GenericStorage(
+                        label=label,
+                        nominal_storage_capacity=None,
+                        investment=solph.Investment(
+                            ep_costs=storage_dict["parameters"]["epc"],
+                        ),
+                        inputs={bus_in: solph.Flow(variable_costs=0)},
+                        outputs={bus_out: solph.Flow(investment=solph.Investment(ep_costs=0))},
+                        initial_storage_level=storage_dict["parameters"]["soc_max"],
+                        min_storage_level=storage_dict["parameters"]["soc_min"],
+                        max_storage_level=storage_dict["parameters"]["soc_max"],
+                        balanced=False,
+                        inflow_conversion_factor=storage_dict["parameters"]["efficiency"],
+                        outflow_conversion_factor=storage_dict["parameters"]["efficiency"],
+                        invest_relation_input_capacity=storage_dict["parameters"]["c_rate_in"],
+                        invest_relation_output_capacity=storage_dict["parameters"][
+                            "c_rate_out"
+                        ],
+                    )
+                else:
+                    # DISPATCH
+                    storage = solph.components.GenericStorage(
+                        label=label,
+                        nominal_storage_capacity=storage_dict["parameters"]["nominal_capacity"],
+                        inputs={bus_in: solph.Flow(variable_costs=0)},
+                        outputs={bus_out: solph.Flow()},
+                        initial_storage_level=storage_dict["parameters"]["soc_max"],
+                        min_storage_level=storage_dict["parameters"]["soc_min"],
+                        max_storage_level=storage_dict["parameters"]["soc_max"],
+                        balanced=True,
+                        inflow_conversion_factor=storage_dict["parameters"]["efficiency"],
+                        outflow_conversion_factor=storage_dict["parameters"]["efficiency"],
+                        invest_relation_input_capacity=storage_dict["parameters"]["c_rate_in"],
+                        invest_relation_output_capacity=storage_dict["parameters"][
+                            "c_rate_out"
+                        ],
+                    )
             else:
-                # DISPATCH
-                battery = solph.components.GenericStorage(
-                    label="battery",
-                    nominal_storage_capacity=self.battery["parameters"]["nominal_capacity"],
-                    inputs={b_el_dc: solph.Flow(variable_costs=0)},
-                    outputs={b_el_dc: solph.Flow()},
-                    initial_storage_level=self.battery["parameters"]["soc_max"],
-                    min_storage_level=self.battery["parameters"]["soc_min"],
-                    max_storage_level=self.battery["parameters"]["soc_max"],
-                    balanced=True,
-                    inflow_conversion_factor=self.battery["parameters"]["efficiency"],
-                    outflow_conversion_factor=self.battery["parameters"]["efficiency"],
-                    invest_relation_input_capacity=self.battery["parameters"]["c_rate_in"],
-                    invest_relation_output_capacity=self.battery["parameters"][
-                        "c_rate_out"
-                    ],
+                storage = solph.components.GenericStorage(
+                    label=label,
+                    nominal_storage_capacity=0,
+                    inputs={bus_in: solph.Flow()},
+                    outputs={bus_out: solph.Flow()},
                 )
-        else:
-            battery = solph.components.GenericStorage(
-                label="battery",
-                nominal_storage_capacity=0,
-                inputs={b_el_dc: solph.Flow()},
-                outputs={b_el_dc: solph.Flow()},
-            )
+            return storage
 
+        battery = _build_generic_storage("battery", self.battery, bus_in=b_el_dc, bus_out=b_el_dc)
 
         # -------------------- DEMAND --------------------
         demand_el = solph.components.Sink(
