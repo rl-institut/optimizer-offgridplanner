@@ -100,6 +100,11 @@ class EnergySystemOptimizer:
         self.battery = energy_system_design["battery"]
         self.inverter = energy_system_design["inverter"]
         self.rectifier = energy_system_design["rectifier"]
+        if "h2_storage" in energy_system_design:
+            self.H2_system = True
+            self.fuel_cell = energy_system_design["fuel_cell"]
+            self.electrolyzer = energy_system_design["electrolyzer"]
+            self.h2_storage = energy_system_design["h2_storage"]
         self.shortage = energy_system_design["shortage"]
         self.fuel_density_diesel = 0.846
         # Reconstruct timestamp index from passed parameters
@@ -398,6 +403,15 @@ class EnergySystemOptimizer:
                     ),
                 },
             )
+
+        if self.H2_system:
+            b_h2 = solph.Bus(label="hydrogen")
+            fuel_cell = _build_generic_transformer("fuel_cell", self.fuel_cell, bus_in=b_h2, bus_out=b_el_ac)
+            electrolyzer = _build_generic_transformer("fuel_cell", self.electrolyzer, bus_in=b_el_ac, bus_out=b_h2)
+            h2_storage = _build_generic_storage("h2_storage", self.h2_storage, bus_in=b_h2, bus_out=b_h2)
+
+            energy_system.add(b_h2, electrolyzer, fuel_cell, h2_storage)
+
 
         # add all objects to the energy system
         energy_system.add(
