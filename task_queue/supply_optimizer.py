@@ -100,6 +100,7 @@ class EnergySystemOptimizer:
         self.battery = energy_system_design["battery"]
         self.inverter = energy_system_design["inverter"]
         self.rectifier = energy_system_design["rectifier"]
+        self.H2_system = False
         if "h2_storage" in energy_system_design:
             self.H2_system = True
             self.fuel_cell = energy_system_design["fuel_cell"]
