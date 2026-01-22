@@ -407,7 +407,7 @@ class EnergySystemOptimizer:
         if self.H2_system:
             b_h2 = solph.Bus(label="hydrogen")
             fuel_cell = _build_generic_transformer("fuel_cell", self.fuel_cell, bus_in=b_h2, bus_out=b_el_ac)
-            electrolyzer = _build_generic_transformer("fuel_cell", self.electrolyzer, bus_in=b_el_ac, bus_out=b_h2)
+            electrolyzer = _build_generic_transformer("electrolyzer", self.electrolyzer, bus_in=b_el_ac, bus_out=b_h2)
             h2_storage = _build_generic_storage("h2_storage", self.h2_storage, bus_in=b_h2, bus_out=b_h2)
 
             energy_system.add(b_h2, electrolyzer, fuel_cell, h2_storage)
