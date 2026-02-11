@@ -101,10 +101,10 @@ def run_simulation(request: Request, input_json=None, queue="supply") -> Respons
 
     # validate input against JSONSchema
     schema = json.loads(get_schema(queue, "input").body)
-    try:
-        validate(input_dict, schema)
-    except jsonschema.exceptions.ValidationError:
-        raise HTTPException(status_code=400, detail=f'Input did not validate against JSONSchema. Hint: You can check the expected JSON format using the "/schema/grid/input" and "/schema/supply/input" endpoints.')
+    # try:
+    #     validate(input_dict, schema)
+    # except jsonschema.exceptions.ValidationError:
+    #     raise HTTPException(status_code=400, detail=f'Input did not validate against JSONSchema. Hint: You can check the expected JSON format using the "/schema/grid/input" and "/schema/supply/input" endpoints.')
 
     # send the task to celery
     task = celery_app.send_task(
