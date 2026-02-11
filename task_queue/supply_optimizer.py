@@ -310,6 +310,9 @@ class EnergySystemOptimizer:
 
         # -------------------- BATTERY --------------------
         def _build_generic_storage(label, storage_dict, bus_in, bus_out):
+            if label == "h2_storage":
+                storage_dict["parameters"]["c_rate_in"] = storage_dict["parameters"]["c_rate_out"] = 1
+
             if storage_dict["settings"]["is_selected"]:
                 if storage_dict["settings"]["design"]:
                     # DESIGN
