@@ -134,7 +134,11 @@ class GridOptimizer:
         ].copy()
         self.pole_max_connection = self.grid_design_dict["pole"]["max_n_connections"]
         self.grid_mst = pd.DataFrame({}, dtype=np.dtype(float))
-        self.max_levelized_grid_cost = self.grid_design_dict["shs"]["max_grid_cost"] / 1000 # convert to currency/Wh
+        if self.grid_design_dict["shs"]["include"]:
+            self.max_levelized_grid_cost = self.grid_design_dict["shs"]["max_grid_cost"] / 1000 # convert to currency/Wh
+        else:
+            # If SHS are not included, set the levelized grid cost threshold to a very high number instead
+            self.max_levelized_grid_cost = 1e6
         self.connection_cable_max_length = self.grid_design_dict["connection_cable"][
             "max_length"
         ]
