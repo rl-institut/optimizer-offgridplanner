@@ -81,6 +81,7 @@ import json
 import logging
 import math
 import time
+import utm
 
 import numpy as np
 import pandas as pd
@@ -741,8 +742,9 @@ class GridOptimizer:
             + false: lon,lat --> x,y
             + true: x,y --> lon/lat
         """
-
-        p = Proj(proj="utm", zone=32, ellps="WGS84", preserve_units=False)
+        # extract the UTM zone from the coordinates
+        utm_zone = utm.from_latlon(latitude=self.nodes.latitude.mean(), longitude=self.nodes.longitude.mean())
+        p = Proj(proj="utm", zone=utm_zone[2], ellps="WGS84", preserve_units=False)
 
         # if inverse=true, this is the case when the (x,y) coordinates of the obtained
         # poles (from the optimization) are converted into (lon,lat)
