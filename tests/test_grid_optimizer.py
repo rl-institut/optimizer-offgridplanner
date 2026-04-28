@@ -222,6 +222,7 @@ def test_add_node_uses_defaults_and_overrides(optimizer: GridOptimizer) -> None:
 
 def test_consumers_poles_and_grid_shs_filters(optimizer: GridOptimizer) -> None:
     optimizer._add_node("p-0", node_type="pole")
+
     assert optimizer.consumers().index.tolist() == ["0", "1"]
     assert optimizer.get_grid_consumers().index.tolist() == ["0"]
     assert optimizer.get_shs_consumers().index.tolist() == ["1"]
@@ -390,3 +391,154 @@ def test_cut_specific_pole_disconnects_consumers_and_removes_related_links(
     assert pd.isna(optimizer.nodes.loc["0", "parent"])
     assert optimizer.links.empty
     assert optimizer.nodes.loc["2", "n_distribution_links"] == 0
+
+
+@pytest.mark.integration
+def test_convert_lonlat_xy_round_trip_preserves_coordinates(optimizer: GridOptimizer) -> None:
+    pytest.importorskip("utm")
+    pytest.importorskip("pyproj")
+
+    original = optimizer.nodes[["latitude", "longitude"]].astype(float).copy()
+
+    optimizer.convert_lonlat_xy()
+
+    assert optimizer.nodes["x"].notna().all()
+    assert optimizer.nodes["y"].notna().all()
+    assert not np.allclose(optimizer.nodes["x"].astype(float), original["longitude"].to_numpy())
+
+    optimizer.convert_lonlat_xy(inverse=True)
+
+    assert optimizer.nodes["latitude"].astype(float).to_numpy() == pytest.approx(
+        original["latitude"].to_numpy(), abs=1e-6
+    )
+    assert optimizer.nodes["longitude"].astype(float).to_numpy() == pytest.approx(
+        original["longitude"].to_numpy(), abs=1e-6
+    )
+
+
+@pytest.mark.integration
+def test_create_minimum_spanning_tree_selects_shortest_pole_network(
+    optimizer: GridOptimizer,
+) -> None:
+    pytest.importorskip("scipy")
+
+    optimizer.nodes = optimizer.nodes[optimizer.nodes["node_type"] != "consumer"].copy()
+    optimizer.nodes.loc["2", ["x", "y", "node_type"]] = [0.0, 0.0, "power-house"]
+    optimizer._add_node("p-0", node_type="pole", x=0.0, y=3.0)
+    optimizer._add_node("p-1", node_type="pole", x=4.0, y=0.0)
+
+    optimizer.create_minimum_spanning_tree()
+    optimizer.connect_grid_poles()
+
+    assert len(optimizer.links) == 2
+    assert set(optimizer.links["link_type"]) == {"distribution"}
+    assert optimizer.total_length_distribution_cable() == pytest.approx(7.0)
+
+
+@pytest.mark.integration
+def test_set_direction_of_links_orients_distribution_links_away_from_power_house(
+    optimizer: GridOptimizer,
+) -> None:
+    optimizer.nodes = optimizer.nodes[optimizer.nodes["node_type"] != "consumer"].copy()
+    optimizer.nodes.loc["2", ["x", "y", "node_type", "parent", "n_distribution_links"]] = [
+        0.0,
+        0.0,
+        "power-house",
+        "unknown",
+        1,
+    ]
+    optimizer._add_node("p-0", node_type="pole", x=0.0, y=10.0, parent="unknown", n_distribution_links=2)
+    optimizer._add_node("p-1", node_type="pole", x=0.0, y=20.0, parent="unknown", n_distribution_links=1)
+    optimizer._add_links("p-1", "p-0")
+    optimizer._add_links("2", "p-0")
+
+    optimizer._set_direction_of_links()
+
+    assert "(p-0, 2)" in optimizer.links.index
+    assert "(p-1, p-0)" in optimizer.links.index
+    assert optimizer.nodes.loc["p-0", "parent"] == "2"
+    assert optimizer.nodes.loc["p-1", "parent"] == "p-0"
+
+
+@pytest.mark.integration
+def test_kmeans_clustering_adds_poles_and_assigns_consumers_to_clusters(
+    grid_design: dict,
+) -> None:
+    pytest.importorskip("k_means_constrained")
+    pytest.importorskip("utm")
+    pytest.importorskip("pyproj")
+
+    payload = {
+        "nodes": [
+            {
+                "latitude": 52.5200,
+                "longitude": 13.4050,
+                "node_type": "consumer",
+                "consumer_type": "household",
+                "consumer_detail": "a",
+                "how_added": "manual",
+                "shs_options": 0,
+                "custom_specification": "",
+            },
+            {
+                "latitude": 52.5201,
+                "longitude": 13.4051,
+                "node_type": "consumer",
+                "consumer_type": "household",
+                "consumer_detail": "b",
+                "how_added": "manual",
+                "shs_options": 0,
+                "custom_specification": "",
+            },
+            {
+                "latitude": 52.5210,
+                "longitude": 13.4060,
+                "node_type": "consumer",
+                "consumer_type": "household",
+                "consumer_detail": "c",
+                "how_added": "manual",
+                "shs_options": 0,
+                "custom_specification": "",
+            },
+            {
+                "latitude": 52.5211,
+                "longitude": 13.4061,
+                "node_type": "consumer",
+                "consumer_type": "household",
+                "consumer_detail": "d",
+                "how_added": "manual",
+                "shs_options": 0,
+                "custom_specification": "",
+            },
+        ],
+        "grid_design": grid_design,
+        "yearly_demand": 1_200.0,
+    }
+    opt = GridOptimizer(payload)
+    opt.convert_lonlat_xy()
+
+    opt.kmeans_clustering(n_clusters=2)
+
+    poles = opt._poles()
+    consumers = opt.consumers()
+    assert len(poles) == 2
+    assert set(poles["node_type"]) == {"pole"}
+    assert consumers["cluster_label"].notna().all()
+    assert poles[["latitude", "longitude", "x", "y"]].notna().all().all()
+
+
+@pytest.mark.integration
+def test_connect_grid_consumers_links_each_consumer_to_cluster_pole(
+    optimizer: GridOptimizer,
+) -> None:
+    optimizer.nodes = optimizer.nodes[optimizer.nodes["node_type"] != "power-house"].copy()
+    optimizer.nodes.loc["0", ["cluster_label", "is_connected", "x", "y"]] = [0, True, 0.0, 1.0]
+    optimizer.nodes.loc["1", ["cluster_label", "is_connected", "x", "y"]] = [0, True, 0.0, 2.0]
+    optimizer._add_node("p-0", node_type="pole", cluster_label=0, type_fixed=False, x=0.0, y=0.0)
+
+    optimizer.connect_grid_consumers()
+
+    assert set(optimizer.links.index) == {"(p-0, 0)", "(p-0, 1)"}
+    assert set(optimizer.links["link_type"]) == {"connection"}
+    assert optimizer.nodes.loc["0", "parent"] == "p-0"
+    assert optimizer.nodes.loc["1", "parent"] == "p-0"
