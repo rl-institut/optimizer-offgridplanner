@@ -424,28 +424,54 @@ def test_create_minimum_spanning_tree_selects_shortest_pole_network(
 
 
 @pytest.mark.integration
-def test_set_direction_of_links_orients_distribution_links_away_from_power_house(
+def test_set_direction_of_links_orients_distribution_links_toward_power_house(
     optimizer: GridOptimizer,
 ) -> None:
     optimizer.nodes = optimizer.nodes[optimizer.nodes["node_type"] != "consumer"].copy()
-    optimizer.nodes.loc["2", ["x", "y", "node_type", "parent", "n_distribution_links"]] = [
-        0.0,
-        0.0,
-        "power-house",
-        "unknown",
-        1,
-    ]
-    optimizer._add_node("p-0", node_type="pole", x=0.0, y=10.0, parent="unknown", n_distribution_links=2)
-    optimizer._add_node("p-1", node_type="pole", x=0.0, y=20.0, parent="unknown", n_distribution_links=1)
+
+    optimizer.nodes.loc[
+        "2",
+        ["x", "y", "node_type", "parent", "n_distribution_links"],
+    ] = [0.0, 0.0, "power-house", "unknown", 1]
+
+    optimizer._add_node(
+        "p-0",
+        node_type="pole",
+        consumer_type="n.a.",
+        consumer_detail="n.a.",
+        x=10.0,
+        y=0.0,
+        parent="unknown",
+        n_distribution_links=2,
+    )
+    optimizer._add_node(
+        "p-1",
+        node_type="pole",
+        consumer_type="n.a.",
+        consumer_detail="n.a.",
+        x=20.0,
+        y=0.0,
+        parent="unknown",
+        n_distribution_links=1,
+    )
+
+    # Physical/tree topology:
+    # p-1 -> p-0 -> 2(power-house)
+    optimizer._add_links("p-0", "2")
     optimizer._add_links("p-1", "p-0")
-    optimizer._add_links("2", "p-0")
 
     optimizer._set_direction_of_links()
 
     assert "(p-0, 2)" in optimizer.links.index
     assert "(p-1, p-0)" in optimizer.links.index
+    assert optimizer.nodes.loc["2", "parent"] == "2"
     assert optimizer.nodes.loc["p-0", "parent"] == "2"
     assert optimizer.nodes.loc["p-1", "parent"] == "p-0"
+
+    assert optimizer.links.loc["(p-0, 2)", "from_node"] == "p-0"
+    assert optimizer.links.loc["(p-0, 2)", "to_node"] == "2"
+    assert optimizer.links.loc["(p-1, p-0)", "from_node"] == "p-1"
+    assert optimizer.links.loc["(p-1, p-0)", "to_node"] == "p-0"
 
 
 @pytest.mark.integration
