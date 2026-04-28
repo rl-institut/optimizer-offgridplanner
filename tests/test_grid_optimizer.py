@@ -188,8 +188,8 @@ def test_init_queries_nodes_and_sets_shs_threshold(grid_opt_json: dict) -> None:
     opt = GridOptimizer(grid_opt_json)
 
     assert opt.nodes.index.tolist() == ["0", "1", "2", "3"]
-    assert opt.nodes.loc["0", "is_connected"] is True
-    assert opt.nodes.loc["1", "is_connected"] is False
+    assert opt.nodes.loc["0", "is_connected"] == True
+    assert opt.nodes.loc["1", "is_connected"] == False
     assert opt.power_house.index.tolist() == ["2"]
     assert opt.max_levelized_grid_cost == pytest.approx(1.5)
     assert opt.connection_cable_max_length == 40.0
