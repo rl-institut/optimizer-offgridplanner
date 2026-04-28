@@ -7,6 +7,7 @@ k-means clustering, UTM projection, and SciPy's MST implementation.
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import math
 import sys
@@ -21,6 +22,29 @@ import pytest
 # Keep these tests importable in lightweight unit-test environments where the
 # optional/geospatial optimization dependencies are not installed. The tested
 # functions below do not execute those dependencies.
+@pytest.fixture
+def make_optimizer_with_single_node(grid_opt_json):
+    def _make(latitude: float, longitude: float) -> GridOptimizer:
+        single_node_grid_opt_json = copy.deepcopy(grid_opt_json)
+        single_node_grid_opt_json["nodes"] = [
+            {
+                "latitude": latitude,
+                "longitude": longitude,
+                "x": 0.0,
+                "y": 0.0,
+                "node_type": "consumer",
+                "consumer_type": "household",
+                "consumer_detail": "test",
+                "how_added": "manual",
+                "shs_options": 0,
+                "custom_specification": "",
+            }
+        ]
+        return GridOptimizer(single_node_grid_opt_json)
+
+    return _make
+
+
 def _install_import_stubs_if_needed() -> None:
     if importlib.util.find_spec("k_means_constrained") is None:
         module = types.ModuleType("k_means_constrained")
@@ -154,7 +178,9 @@ def optimizer(grid_opt_json: dict) -> GridOptimizer:
     return opt
 
 
-def test_optimize_grid_delegates_to_grid_optimizer(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_optimize_grid_delegates_to_grid_optimizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sentinel_input = {"payload": "value"}
     sentinel_result = {"nodes": [], "links": []}
 
@@ -217,7 +243,9 @@ def test_consumers_poles_and_grid_shs_filters(optimizer: GridOptimizer) -> None:
     assert optimizer._poles().index.tolist() == ["2", "p-0"]
 
 
-def test_distance_between_nodes_returns_euclidean_distance(optimizer: GridOptimizer) -> None:
+def test_distance_between_nodes_returns_euclidean_distance(
+    optimizer: GridOptimizer,
+) -> None:
     assert optimizer.distance_between_nodes("0", "1") == pytest.approx(5.0)
     assert math.isinf(optimizer.distance_between_nodes("0", "missing"))
 
@@ -225,7 +253,9 @@ def test_distance_between_nodes_returns_euclidean_distance(optimizer: GridOptimi
 def test_add_links_creates_connection_link_and_sets_endpoint_metadata(
     optimizer: GridOptimizer,
 ) -> None:
-    optimizer._add_node("p-0", node_type="pole", x=0.0, y=0.0, latitude=1.0, longitude=2.0)
+    optimizer._add_node(
+        "p-0", node_type="pole", x=0.0, y=0.0, latitude=1.0, longitude=2.0
+    )
     optimizer.nodes.loc["0", ["x", "y", "latitude", "longitude"]] = [3.0, 4.0, 5.0, 6.0]
 
     optimizer._add_links("p-0", "0")
@@ -278,7 +308,9 @@ def test_total_lengths_and_cost(optimizer: GridOptimizer) -> None:
     assert optimizer.cost() == pytest.approx(410.0)
 
 
-def test_cost_is_infinite_without_links_or_without_poles(optimizer: GridOptimizer) -> None:
+def test_cost_is_infinite_without_links_or_without_poles(
+    optimizer: GridOptimizer,
+) -> None:
     assert math.isinf(optimizer.cost())
 
     optimizer._add_node("p-0", node_type="pole")
@@ -312,7 +344,9 @@ def test_find_index_longest_distribution_link(optimizer: GridOptimizer) -> None:
     assert optimizer.find_index_longest_distribution_link() == ["long"]
 
 
-def test_add_number_of_distribution_and_connection_cables(optimizer: GridOptimizer) -> None:
+def test_add_number_of_distribution_and_connection_cables(
+    optimizer: GridOptimizer,
+) -> None:
     optimizer._add_node("p-0", node_type="pole", x=0.0, y=0.0)
     optimizer._add_node("p-1", node_type="pole", x=0.0, y=10.0)
     optimizer._add_links("p-0", "0")
@@ -342,7 +376,9 @@ def test_process_nodes_formats_coordinates_and_converts_unknown_parent_to_none(
 def test_process_links_formats_coordinates_and_drops_internal_columns(
     optimizer: GridOptimizer,
 ) -> None:
-    optimizer._add_node("p-0", node_type="pole", latitude=1.23456789, longitude=2.34567891)
+    optimizer._add_node(
+        "p-0", node_type="pole", latitude=1.23456789, longitude=2.34567891
+    )
     optimizer.nodes.loc["0", ["latitude", "longitude"]] = [3.45678912, 4.56789123]
     optimizer._add_links("p-0", "0")
 
@@ -366,9 +402,15 @@ def test_change_direction_of_links_renames_index_when_needed() -> None:
 def test_cut_specific_pole_disconnects_consumers_and_removes_related_links(
     optimizer: GridOptimizer,
 ) -> None:
-    optimizer._add_node("p-0", node_type="pole", x=0.0, y=0.0, parent="2", n_distribution_links=1)
+    optimizer._add_node(
+        "p-0", node_type="pole", x=0.0, y=0.0, parent="2", n_distribution_links=1
+    )
     optimizer.nodes.loc["2", "n_distribution_links"] = 1
-    optimizer.nodes.loc["0", ["parent", "branch", "is_connected"]] = ["p-0", "p-0", True]
+    optimizer.nodes.loc["0", ["parent", "branch", "is_connected"]] = [
+        "p-0",
+        "p-0",
+        True,
+    ]
     optimizer._add_links("p-0", "0")
     optimizer._add_links("2", "p-0")
 
@@ -382,27 +424,38 @@ def test_cut_specific_pole_disconnects_consumers_and_removes_related_links(
 
 
 @pytest.mark.integration
-def test_convert_lonlat_xy_round_trip_preserves_coordinates(optimizer: GridOptimizer) -> None:
-    pytest.importorskip("utm")
-    pytest.importorskip("pyproj")
-
-    original = optimizer.nodes[["latitude", "longitude"]].astype(float).copy()
+@pytest.mark.parametrize(
+    ("latitude", "longitude"),
+    [
+        (52.5200, 13.4050),   # Germany: Berlin
+        (9.0765, 7.3986),     # Nigeria: Abuja
+        (13.7563, 100.5018),  # Thailand: Bangkok
+    ],
+)
+def test_convert_lonlat_xy_round_trip_different_locations(
+    make_optimizer_with_single_node,
+    latitude: float,
+    longitude: float,
+) -> None:
+    optimizer = make_optimizer_with_single_node(
+        latitude=latitude,
+        longitude=longitude,
+    )
 
     optimizer.convert_lonlat_xy()
-
-    assert optimizer.nodes["x"].notna().all()
-    assert optimizer.nodes["y"].notna().all()
-    assert not np.allclose(optimizer.nodes["x"].astype(float), original["longitude"].to_numpy())
+    assert optimizer.nodes.loc["0", "x"] != 0
+    assert optimizer.nodes.loc["0", "y"] != 0
 
     optimizer.convert_lonlat_xy(inverse=True)
 
-    assert optimizer.nodes["latitude"].astype(float).to_numpy() == pytest.approx(
-        original["latitude"].to_numpy(), abs=1e-6
+    assert float(optimizer.nodes.loc["0", "latitude"]) == pytest.approx(
+        latitude,
+        abs=1e-5,
     )
-    assert optimizer.nodes["longitude"].astype(float).to_numpy() == pytest.approx(
-        original["longitude"].to_numpy(), abs=1e-6
+    assert float(optimizer.nodes.loc["0", "longitude"]) == pytest.approx(
+        longitude,
+        abs=1e-5,
     )
-
 
 @pytest.mark.integration
 def test_create_minimum_spanning_tree_selects_shortest_pole_network(
@@ -545,10 +598,24 @@ def test_kmeans_clustering_adds_poles_and_assigns_consumers_to_clusters(
 def test_connect_grid_consumers_links_each_consumer_to_cluster_pole(
     optimizer: GridOptimizer,
 ) -> None:
-    optimizer.nodes = optimizer.nodes[optimizer.nodes["node_type"] != "power-house"].copy()
-    optimizer.nodes.loc["0", ["cluster_label", "is_connected", "x", "y"]] = [0, True, 0.0, 1.0]
-    optimizer.nodes.loc["1", ["cluster_label", "is_connected", "x", "y"]] = [0, True, 0.0, 2.0]
-    optimizer._add_node("p-0", node_type="pole", cluster_label=0, type_fixed=False, x=0.0, y=0.0)
+    optimizer.nodes = optimizer.nodes[
+        optimizer.nodes["node_type"] != "power-house"
+    ].copy()
+    optimizer.nodes.loc["0", ["cluster_label", "is_connected", "x", "y"]] = [
+        0,
+        True,
+        0.0,
+        1.0,
+    ]
+    optimizer.nodes.loc["1", ["cluster_label", "is_connected", "x", "y"]] = [
+        0,
+        True,
+        0.0,
+        2.0,
+    ]
+    optimizer._add_node(
+        "p-0", node_type="pole", cluster_label=0, type_fixed=False, x=0.0, y=0.0
+    )
 
     optimizer.connect_grid_consumers()
 
