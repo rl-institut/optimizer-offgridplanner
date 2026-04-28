@@ -675,11 +675,10 @@ class GridOptimizer:
         """
 
         # specify the type of the link which is obtained based on the start/end nodes of the link
-        if (
-            self.nodes.node_type.loc[label_node_from]
-            and self.nodes.node_type.loc[label_node_to]
-        ) == "pole":
-            # convention: if two poles are getting connected, the beginning will be the one with lower number
+        from_type = self.nodes.node_type.loc[label_node_from]
+        to_type = self.nodes.node_type.loc[label_node_to]
+
+        if from_type in ["pole", "power-house"] and to_type in ["pole", "power-house"]:
             (label_node_from, label_node_to) = sorted([label_node_from, label_node_to])
             link_type = "distribution"
         else:
@@ -1069,9 +1068,16 @@ class GridOptimizer:
         return consumers
 
     def _determine_distribution_links(self):
-        idxs = self.links[self.links.index.to_series().str.count("p") == 2].index  # noqa: PLR2004
+        pole_like_nodes = self.nodes[
+            self.nodes["node_type"].isin(["pole", "power-house"])
+        ].index
+
+        idxs = self.links[
+            self.links["from_node"].isin(pole_like_nodes)
+            & self.links["to_node"].isin(pole_like_nodes)
+            ].index
         self.links.loc[idxs, "link_type"] = "distribution"
-        self.distribution_links = self.links.loc[idxs]
+        self.distribution_links = self.links.loc[idxs].copy()
         return idxs
 
     def _distribute_cost_among_consumers(self):
@@ -1367,6 +1373,7 @@ class GridOptimizer:
         links["poles"] = links.index.str.replace(r"[\(\) ]", "", regex=True)
         poles = self._poles().copy()
         power_house_idx = poles[poles["node_type"] == "power-house"].index[0]
+        self.nodes.loc[power_house_idx, "parent"] = power_house_idx
         parent_pole_list = [power_house_idx]
         examined_pole_list = []
 
@@ -1380,9 +1387,6 @@ class GridOptimizer:
                     )
                 )
             else:
-                self.nodes.loc[self.nodes["node_type"] == "power-house", "parent"] = (
-                    self.nodes[self.nodes["node_type"] == "power-house"].index[0]
-                )
                 if len(self.nodes["parent"][self.nodes["parent"] == "unknown"]) == 0:
                     break
                 child_pole_list = self.nodes[
