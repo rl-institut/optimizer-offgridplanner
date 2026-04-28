@@ -108,6 +108,11 @@ class GridOptimizer:
         self.start_execution_time = time.monotonic()
         self.grid_opt_json = grid_opt_json
         self.nodes = pd.DataFrame(self.grid_opt_json["nodes"])
+        utm_zone = utm.from_latlon(
+            latitude=self.nodes.latitude.mean(),
+            longitude=self.nodes.longitude.mean(),
+        )
+        self._utm_zone = utm_zone[2]
         self.grid_design_dict = self.grid_opt_json["grid_design"]
         self.yearly_demand = self.grid_opt_json["yearly_demand"]
         self.nodes_df, self.power_house = self._query_nodes()
@@ -742,9 +747,7 @@ class GridOptimizer:
             + false: lon,lat --> x,y
             + true: x,y --> lon/lat
         """
-        # extract the UTM zone from the coordinates
-        utm_zone = utm.from_latlon(latitude=self.nodes.latitude.mean(), longitude=self.nodes.longitude.mean())
-        p = Proj(proj="utm", zone=utm_zone[2], ellps="WGS84", preserve_units=False)
+        p = Proj(proj="utm", zone=self._utm_zone, ellps="WGS84", preserve_units=False)
 
         # if inverse=true, this is the case when the (x,y) coordinates of the obtained
         # poles (from the optimization) are converted into (lon,lat)
