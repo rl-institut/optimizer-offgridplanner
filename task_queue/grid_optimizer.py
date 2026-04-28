@@ -675,11 +675,10 @@ class GridOptimizer:
         """
 
         # specify the type of the link which is obtained based on the start/end nodes of the link
-        if (
-            self.nodes.node_type.loc[label_node_from]
-            and self.nodes.node_type.loc[label_node_to]
-        ) == "pole":
-            # convention: if two poles are getting connected, the beginning will be the one with lower number
+        from_type = self.nodes.node_type.loc[label_node_from]
+        to_type = self.nodes.node_type.loc[label_node_to]
+
+        if from_type in ["pole", "power-house"] and to_type in ["pole", "power-house"]:
             (label_node_from, label_node_to) = sorted([label_node_from, label_node_to])
             link_type = "distribution"
         else:
