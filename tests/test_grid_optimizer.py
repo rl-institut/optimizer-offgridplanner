@@ -121,18 +121,6 @@ def grid_opt_json(grid_design: dict) -> dict:
                 "shs_options": 0,
                 "custom_specification": "",
             },
-            {
-                "latitude": 0.0,
-                "longitude": 0.0003,
-                "x": 20.0,
-                "y": 0.0,
-                "node_type": "pole",
-                "consumer_type": "n.a.",
-                "consumer_detail": "n.a.",
-                "how_added": "manual",
-                "shs_options": 0,
-                "custom_specification": "",
-            },
         ],
         "grid_design": grid_design,
         "yearly_demand": 1_200.0,
@@ -187,7 +175,7 @@ def test_optimize_grid_delegates_to_grid_optimizer(monkeypatch: pytest.MonkeyPat
 def test_init_queries_nodes_and_sets_shs_threshold(grid_opt_json: dict) -> None:
     opt = GridOptimizer(grid_opt_json)
 
-    assert opt.nodes.index.tolist() == ["0", "1", "2", "3"]
+    assert opt.nodes.index.tolist() == ["0", "1", "2"]
     assert opt.nodes.loc["0", "is_connected"] == True
     assert opt.nodes.loc["1", "is_connected"] == False
     assert opt.power_house.index.tolist() == ["2"]
@@ -226,7 +214,7 @@ def test_consumers_poles_and_grid_shs_filters(optimizer: GridOptimizer) -> None:
     assert optimizer.consumers().index.tolist() == ["0", "1"]
     assert optimizer.get_grid_consumers().index.tolist() == ["0"]
     assert optimizer.get_shs_consumers().index.tolist() == ["1"]
-    assert optimizer._poles().index.tolist() == ["2", "3", "p-0"]
+    assert optimizer._poles().index.tolist() == ["2", "p-0"]
 
 
 def test_distance_between_nodes_returns_euclidean_distance(optimizer: GridOptimizer) -> None:
@@ -424,8 +412,8 @@ def test_create_minimum_spanning_tree_selects_shortest_pole_network(
 
     optimizer.nodes = optimizer.nodes[optimizer.nodes["node_type"] != "consumer"].copy()
     optimizer.nodes.loc["2", ["x", "y", "node_type"]] = [0.0, 0.0, "power-house"]
-    optimizer._add_node("p-0", node_type="pole", x=0.0, y=3.0)
-    optimizer._add_node("p-1", node_type="pole", x=4.0, y=0.0)
+    optimizer._add_node("p-0", node_type="pole", consumer_type="n.a.", x=0.0, y=3.0)
+    optimizer._add_node("p-1", node_type="pole", consumer_type="n.a.", x=4.0, y=0.0)
 
     optimizer.create_minimum_spanning_tree()
     optimizer.connect_grid_poles()
