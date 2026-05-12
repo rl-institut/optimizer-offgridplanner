@@ -151,6 +151,8 @@ class GridOptimizer:
         self.distribution_cable_max_length = self.grid_design_dict[
             "distribution_cable"
         ]["max_length"]
+        self.road_geometries_xy = None # will be computed from self.grid_design_dict["roads"] in convert_lonlat_xy
+
 
     def optimize(self):
         print("Optimizing distribution grid...")
@@ -797,7 +799,7 @@ class GridOptimizer:
                 self.nodes.loc[node_index, "x"] = x
                 self.nodes.loc[node_index, "y"] = y
 
-            self.road_geometries = [
+            self.road_geometries_xy = [
                 [p(lon, lat) for lat, lon in road_line]
                 for road_line in self.grid_opt_json.get("roads", [])
             ]
@@ -1740,7 +1742,7 @@ class GridOptimizer:
         """
         road_points = []
 
-        for road_line in self.road_geometries:
+        for road_line in self.road_geometries_xy:
             for i in range(len(road_line) - 1):
                 x0, y0 = road_line[i]
                 x1, y1 = road_line[i + 1]
