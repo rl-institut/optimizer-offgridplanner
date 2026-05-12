@@ -1659,55 +1659,32 @@ class GridOptimizer:
         self.grid_mst = grid_mst
 
     #  --------------------- K-MEANS CLUSTERING ---------------------#
-    def kmeans_clustering(self, n_clusters: int):
+    def kmeans_clustering(self, n_clusters: int, consumer_indices: pd.Index = None):
         """
-        Uses a k-means clustering algorithm and returns the coordinates of the centroids.
-
-        Parameters
-        ----------
-            grid (~grids.Grid):
-                grid object
-            n_cluster (int):
-                number of clusters (i.e., k-value) for the k-means clustering algorithm
-
-        Return
-        ------
-            coord_centroids: numpy.ndarray
-                A numpy array containing the coordinates of the cluster centroids.
-                Suppose there are two cluster with centers at (x1, y1) & (x2, y2),
-                then the output array would look like:
-                    array([
-                        [x1, y1],
-                        [x2 , y2]
-                        ])
+        Run constrained k-means on a subset of consumers and append the resulting
+        poles to self.nodes. If consumer_indices is None, all connected consumers
+        are used. Callers are responsible for clearing stale poles beforehand.
         """
+        if consumer_indices is None:
+            consumer_indices = self.get_grid_consumers().index
 
-        # first, all poles must be removed from the nodes list
-        self._clear_poles()
-        grid_consumers = self.get_grid_consumers()
+        consumers = self.nodes.loc[consumer_indices]
+        nodes_coord = consumers[["x", "y"]].to_numpy()
 
-        # gets (x,y) coordinates of all nodes in the grid
-        nodes_coord = grid_consumers[grid_consumers["is_connected"]][
-            ["x", "y"]
-        ].to_numpy()
-
-        # call kmeans clustering with constraints (min and max number of members in each cluster )
         kmeans = KMeansConstrained(
             n_clusters=n_clusters,
-            init="k-means++",  # 'k-means++' or 'random'
+            init="k-means++",
             n_init=10,
             max_iter=300,
             tol=1e-4,
             size_min=0,
-            size_max=self.pole_max_connection,
+            size_max=self.pole_max_connection if self.pole_max_connection > 0 else len(consumers),
             random_state=0,
             n_jobs=5,
         )
-        # fit clusters to the data
         kmeans.fit(nodes_coord)
+        self.nodes.loc[consumer_indices, "cluster_label"] = kmeans.predict(nodes_coord)
 
-        # coordinates of the centroids of the clusters
-        grid_consumers["cluster_label"] = kmeans.predict(nodes_coord)
         poles = pd.DataFrame(kmeans.cluster_centers_, columns=["x", "y"])
         poles.index.name = "cluster_label"
         poles = poles.reset_index(drop=False)
@@ -1725,13 +1702,8 @@ class GridOptimizer:
         poles["n_distribution_links"] = 0
         poles["parent"] = "unknown"
         poles["distribution_cost"] = 0
-        self.nodes = pd.concat(
-            [grid_consumers, poles, self.get_shs_consumers()],
-            axis=0,
-        )
+        self.nodes = pd.concat([self.nodes, poles])
         self.nodes.index = self.nodes.index.astype("str")
-
-        # compute (lon,lat) coordinates for the poles
         self.convert_lonlat_xy(inverse=True)
 
     def _sample_road_poles(self) -> pd.DataFrame:
@@ -1823,49 +1795,6 @@ class GridOptimizer:
 
         return consumers.index.difference(pd.Index(list(assigned.keys())))
 
-    def _kmeans_for_unassigned(self, unassigned_indices: pd.Index, n_clusters: int):
-        """
-        Run k-means only on a subset of consumers (those not served by road poles).
-        Appends k-means poles to self.nodes without clearing existing road poles.
-        """
-        unassigned = self.nodes.loc[unassigned_indices]
-        nodes_coord = unassigned[["x", "y"]].to_numpy()
-
-        kmeans = KMeansConstrained(
-            n_clusters=n_clusters,
-            init="k-means++",
-            n_init=10,
-            max_iter=300,
-            tol=1e-4,
-            size_min=0,
-            size_max=self.pole_max_connection if self.pole_max_connection > 0 else len(unassigned),
-            random_state=0,
-            n_jobs=5,
-        )
-        kmeans.fit(nodes_coord)
-        self.nodes.loc[unassigned_indices, "cluster_label"] = kmeans.predict(nodes_coord)
-
-        poles = pd.DataFrame(kmeans.cluster_centers_, columns=["x", "y"])
-        poles.index.name = "cluster_label"
-        poles = poles.reset_index(drop=False)
-        poles.index = "p-" + poles.index.astype(str)
-        poles["node_type"] = "pole"
-        poles["consumer_type"] = "n.a."
-        poles["consumer_detail"] = "n.a."
-        poles["is_connected"] = True
-        poles["how_added"] = "k-means"
-        poles["latitude"] = 0
-        poles["longitude"] = 0
-        poles["distance_to_load_center"] = 0
-        poles["type_fixed"] = False
-        poles["n_connection_links"] = "0"
-        poles["n_distribution_links"] = 0
-        poles["parent"] = "unknown"
-        poles["distribution_cost"] = 0
-        self.nodes = pd.concat([self.nodes, poles])
-        self.nodes.index = self.nodes.index.astype("str")
-        self.convert_lonlat_xy(inverse=True)
-
     def _place_poles_with_roads(self):
         """
         Road-aware pole placement: sample poles along road geometries, associate
@@ -1887,7 +1816,7 @@ class GridOptimizer:
                 if self.pole_max_connection > 0
                 else 1
             )
-            self._kmeans_for_unassigned(unassigned, n_kmeans)
+            self.kmeans_clustering(n_clusters=n_kmeans, consumer_indices=unassigned)
 
     def determine_poles(self, min_n_clusters):
         """
@@ -1896,6 +1825,7 @@ class GridOptimizer:
         self.kmeans_clustering(n_clusters=min_n_clusters)
 
     def is_enough_poles(self, n):
+        self._clear_poles()
         self.kmeans_clustering(n_clusters=n)
         self.connect_grid_consumers()
         constraints_violation = self.links[self.links["link_type"] == "connection"]
