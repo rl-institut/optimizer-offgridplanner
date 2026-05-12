@@ -169,13 +169,30 @@ class GridOptimizer:
             power_house_consumers = None
         print("Determining number of poles...")
         if self.grid_opt_json.get("roads"):
-            self._place_poles_with_roads(power_house_consumers)
+            self._place_poles_with_roads()
         else:
             n_poles = self._find_opt_number_of_poles(n_grid_consumers)
-            self.determine_poles(
-                min_n_clusters=n_poles,
-                power_house_consumers=power_house_consumers,
-            )
+            self.determine_poles(min_n_clusters=n_poles)
+
+        if self.power_house is not None:
+            cluster_label = self.nodes.loc["100000", "cluster_label"]
+            power_house_idx = self.nodes[
+                (self.nodes["node_type"] == "pole")
+                & (self.nodes["cluster_label"] == cluster_label)
+            ].index
+            power_house_consumers["cluster_label"] = cluster_label
+            power_house_consumers["consumer_type"] = np.nan
+            self.nodes = pd.concat([self.nodes, power_house_consumers])
+            self._placeholder_consumers_for_power_house(remove=True)
+
+        self.create_minimum_spanning_tree()
+        self.connect_grid_consumers()
+        self.connect_grid_poles()
+
+        if self.power_house is not None:
+            self.nodes.loc[self.nodes.index == power_house_idx[0], "node_type"] = "power-house"
+            self.nodes.loc[self.nodes.index == power_house_idx[0], "how_added"] = "manual"
+
         # Find the connection links_df in the network with lengths greater than the
         # maximum allowed length for `connection` cables, specified by the user.
         long_links = self.find_index_longest_distribution_link()
@@ -779,6 +796,11 @@ class GridOptimizer:
                 )
                 self.nodes.loc[node_index, "x"] = x
                 self.nodes.loc[node_index, "y"] = y
+
+            self.road_geometries = [
+                [p(lon, lat) for lat, lon in road_line]
+                for road_line in self.grid_opt_json.get("roads", [])
+            ]
 
             # store reference values for (x,y) to use later when converting (x,y) to (lon,lat)
 
@@ -1712,27 +1734,24 @@ class GridOptimizer:
 
     def _sample_road_poles(self) -> pd.DataFrame:
         """
-        Sample candidate pole positions along road line geometries. Roads are a list of polylines, each a list of
-        [lat, lon] pairs. Sampling interval is half the distribution cable max length.
-        Returns a DataFrame of poles in the same schema as kmeans_clustering produces.
+        Sample candidate pole positions along road line geometries. Road coords are pre-projected to
+        (x, y) in self.road_geometries by convert_lonlat_xy. Returns count of
+        poles added.
         """
-        p = Proj(proj="utm", zone=self._utm_zone, ellps="WGS84", preserve_units=False)
-        sampling_distance = self.distribution_cable_max_length / 2
         road_points = []
 
-        for road_line in self.grid_opt_json.get("roads", []):
-            coords_xy = [p(lon, lat) for lat, lon in road_line]
-            for i in range(len(coords_xy) - 1):
-                x0, y0 = coords_xy[i]
-                x1, y1 = coords_xy[i + 1]
+        for road_line in self.road_geometries:
+            for i in range(len(road_line) - 1):
+                x0, y0 = road_line[i]
+                x1, y1 = road_line[i + 1]
                 seg_len = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
                 road_points.append((x0, y0))
-                if seg_len > sampling_distance:
-                    n_interior = int(seg_len // sampling_distance)
-                    for k in range(1, n_interior + 1):
-                        t = k / (n_interior + 1)
+                if seg_len > self.distribution_cable_max_length:
+                    n_interior_poles = int(seg_len // self.distribution_cable_max_length)
+                    for k in range(1, n_interior_poles + 1):
+                        t = k / (n_interior_poles + 1)
                         road_points.append((x0 + t * (x1 - x0), y0 + t * (y1 - y0)))
-            road_points.append(coords_xy[-1])
+            road_points.append(road_line[-1])
 
         if not road_points:
             return pd.DataFrame()
@@ -1747,13 +1766,20 @@ class GridOptimizer:
         poles["latitude"] = 0.0
         poles["longitude"] = 0.0
         poles["distance_to_load_center"] = 0
-        poles["type_fixed"] = False
+        # set to true??
+        poles["type_fixed"] = True
         poles["n_connection_links"] = "0"
         poles["n_distribution_links"] = 0
         poles["parent"] = "unknown"
         poles["distribution_cost"] = 0
         # High-offset cluster labels avoid collision with k-means labels (0..n)
-        poles["cluster_label"] = range(100000, 100000 + len(poles))
+        poles["cluster_label"] = range(1000)
+
+        self.nodes = pd.concat(
+            [self.nodes, poles],
+            axis=0,
+        )
+
         return poles
 
     def _associate_consumers_to_road_poles(self) -> pd.Index:
@@ -1775,7 +1801,6 @@ class GridOptimizer:
             cx = self.nodes.at[c_idx, "x"]
             cy = self.nodes.at[c_idx, "y"]
             best_pole = None
-            best_dist = self.connection_cable_max_length
 
             for p_idx in road_pole_idxs:
                 if self.pole_max_connection > 0 and pole_counts[p_idx] >= self.pole_max_connection:
@@ -1783,8 +1808,7 @@ class GridOptimizer:
                 px = self.nodes.at[p_idx, "x"]
                 py = self.nodes.at[p_idx, "y"]
                 dist = math.sqrt((cx - px) ** 2 + (cy - py) ** 2)
-                if dist <= best_dist:
-                    best_dist = dist
+                if dist <= self.connection_cable_max_length:
                     best_pole = p_idx
 
             if best_pole is not None:
@@ -1840,20 +1864,17 @@ class GridOptimizer:
         self.nodes.index = self.nodes.index.astype("str")
         self.convert_lonlat_xy(inverse=True)
 
-    def _place_poles_with_roads(self, power_house_consumers):
+    def _place_poles_with_roads(self):
         """
         Road-aware pole placement: sample poles along road geometries, associate
         consumers within connection_cable_max_length, then run k-means only on
-        consumers that road poles could not reach. Handles power house the same
-        way as determine_poles.
+        consumers that road poles could not reach.
         """
         if "cluster_label" not in self.nodes.columns:
             self.nodes["cluster_label"] = -1
 
-        road_poles = self._sample_road_poles()
-        if not road_poles.empty:
-            self.nodes = pd.concat([self.nodes, road_poles])
-            self.nodes.index = self.nodes.index.astype("str")
+        n_road_poles = self._sample_road_poles()
+        if n_road_poles > 0:
             unassigned = self._associate_consumers_to_road_poles()
         else:
             unassigned = self.get_grid_consumers().index
@@ -1866,72 +1887,11 @@ class GridOptimizer:
             )
             self._kmeans_for_unassigned(unassigned, n_kmeans)
 
-        if self.power_house is not None:
-            cluster_label = self.nodes.loc["100000", "cluster_label"]
-            power_house_idx = self.nodes[
-                (self.nodes["node_type"] == "pole")
-                & (self.nodes["cluster_label"] == cluster_label)
-            ].index
-            power_house_consumers["cluster_label"] = cluster_label
-            power_house_consumers["consumer_type"] = np.nan
-            self.nodes = pd.concat([self.nodes, power_house_consumers])
-            self._placeholder_consumers_for_power_house(remove=True)
-
-        self.create_minimum_spanning_tree()
-        self.connect_grid_consumers()
-        self.connect_grid_poles()
-
-        if self.power_house is not None:
-            self.nodes.loc[self.nodes.index == power_house_idx[0], "node_type"] = "power-house"
-            self.nodes.loc[self.nodes.index == power_house_idx[0], "how_added"] = "manual"
-
-    def determine_poles(self, min_n_clusters, power_house_consumers):
+    def determine_poles(self, min_n_clusters):
         """
-        Computes the cost of grid based on the configuration obtained from
-        the k-means clustering algorithm for different numbers of poles, and
-        returns the number of poles corresponding to the lowest cost.
-
-        Parameters
-        ----------
-        grid (~grids.Grid):
-            'grid' object which was defined before
-        min_n_clusters: int
-            the minimum number of clusters required for the grid to satisfy
-            the maximum number of pole connections criteria
-
-        Return
-        ------
-        number_of_poles: int
-            the number of poles corresponding to the minimum cost of the grid
+        Place poles using k-means clustering with the given number of clusters.
         """
-        # obtain the location of poles using kmeans clustering method
         self.kmeans_clustering(n_clusters=min_n_clusters)
-        # create the minimum spanning tree to obtain the optimal links between poles
-        if self.power_house is not None:
-            cluster_label = self.nodes.loc["100000", "cluster_label"]
-            power_house_idx = self.nodes[
-                (self.nodes["node_type"] == "pole")
-                & (self.nodes["cluster_label"] == cluster_label)
-            ].index
-            power_house_consumers["cluster_label"] = cluster_label
-            power_house_consumers["consumer_type"] = np.nan
-            self.nodes = pd.concat(
-                [self.nodes, power_house_consumers],
-            )
-            self._placeholder_consumers_for_power_house(remove=True)
-
-        self.create_minimum_spanning_tree()
-
-        # connect all links in the grid based on the previous calculations
-        self.connect_grid_consumers()
-        self.connect_grid_poles()
-        if self.power_house is not None:
-            self.nodes.loc[self.nodes.index == power_house_idx[0], "node_type"] = (
-                "power-house"
-            )
-            self.nodes.loc[self.nodes.index == power_house_idx[0], "how_added"] = (
-                "manual"
-            )
 
     def is_enough_poles(self, n):
         self.kmeans_clustering(n_clusters=n)
