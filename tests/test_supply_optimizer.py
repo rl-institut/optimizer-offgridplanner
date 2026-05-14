@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from supply_optimizer import EnergySystemOptimizer, optimize_energy_system
+from task_queue.supply_optimizer import EnergySystemOptimizer, optimize_energy_system
 
 
 @pytest.fixture
@@ -222,7 +222,7 @@ def test_optimize_energy_system_serializes_oemof_result_shape(
                 },
             }
 
-    monkeypatch.setattr("supply_optimizer.EnergySystemOptimizer", FakeOptimizer)
+    monkeypatch.setattr("task_queue.supply_optimizer.EnergySystemOptimizer", FakeOptimizer)
 
     result = optimize_energy_system(supply_opt_json)
 
