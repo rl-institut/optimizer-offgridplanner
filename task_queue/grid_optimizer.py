@@ -1585,18 +1585,19 @@ class GridOptimizer:
                     label_node_from=index_added_pole if to_from else mst_pole_from,
                     label_node_to=mst_pole_to if to_from else index_added_pole,
                 )
-            elif counter == n_added_poles - 1:
-                # The last `added poles` should be connected to
+            else:
+                # Connect each subsequent pole to the previous added pole.
+                self._add_links(
+                    label_node_from=added_pole_indices[counter - 1],
+                    label_node_to=index_added_pole,
+                )
+            if counter == n_added_poles - 1:
+                # The last `added poles` should also be connected to
                 # the end or to the beginning of the long link,
                 # depending on the `to_from` flag.
                 self._add_links(
                     label_node_from=mst_pole_from if to_from else index_added_pole,
                     label_node_to=index_added_pole if to_from else mst_pole_to,
-                )
-            else:
-                self._add_links(
-                    label_node_from=added_pole_indices[counter - 1],
-                    label_node_to=index_added_pole,
                 )
             self.nodes.loc[index_added_pole, "how_added"] = "long-distance"
 
