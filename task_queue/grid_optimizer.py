@@ -1070,10 +1070,10 @@ class GridOptimizer:
                     (links["from_node"] == parent_pole) & (links["to_node"] == consumer)
                     ]
 
-                length = min(
-                    link["length"].iloc[0],
-                    3,
-                )
+            length = min(
+                link["length"].iloc[0],
+                3,
+            )
             connection_cost = (
                 self.grid_design_dict["mg"]["epc"]
                 + length * self.grid_design_dict["connection_cable"]["epc"]
