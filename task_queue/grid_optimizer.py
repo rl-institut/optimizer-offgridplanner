@@ -1521,23 +1521,18 @@ class GridOptimizer:
         # Remove all existing connections between poles and consumers
         self._clear_links(link_type="connection")
 
-        # calculate the number of clusters and their labels obtained from kmeans clustering
-        n_clusters = len(self._poles()[self._poles()["type_fixed"] == False])  # noqa: E712
-        cluster_labels = self._poles()["cluster_label"]
+        #  iterate over non-fixed (k-means / road-sampled) poles
+        non_fixed_poles = self._poles()[self._poles()["type_fixed"] == False]  # noqa: E712
 
         # create links between each node and the corresponding centroid
-        for cluster in range(n_clusters):
-            if len(self.nodes[self.nodes["cluster_label"] == cluster]) == 1:
+        for _, pole_row in non_fixed_poles.iterrows():
+            label = pole_row["cluster_label"]
+            filtered_nodes = self.nodes[self.nodes["cluster_label"] == label]
+            if len(filtered_nodes) <= 1:
                 continue
-
-            # first filter the nodes and only select those with cluster labels equal to 'cluster'
-            filtered_nodes = self.nodes[
-                self.nodes["cluster_label"] == cluster_labels.iloc[cluster]
-            ]
 
             # then obtain the label of the pole which is in this cluster (as the center)
             pole_label = filtered_nodes.index[filtered_nodes["node_type"] == "pole"][0]
-
             filtered_nodes_idx = [str(node) for node in filtered_nodes.index]
 
             for node_label in filtered_nodes_idx:
