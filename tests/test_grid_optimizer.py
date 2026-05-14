@@ -623,3 +623,45 @@ def test_connect_grid_consumers_links_each_consumer_to_cluster_pole(
     assert set(optimizer.links["link_type"]) == {"connection"}
     assert optimizer.nodes.loc["0", "parent"] == "p-0"
     assert optimizer.nodes.loc["1", "parent"] == "p-0"
+
+
+def _has_link(opt: GridOptimizer, a: str, b: str) -> bool:
+    """Check a link between poles a and b exists in either direction."""
+    return f"({a}, {b})" in opt.links.index or f"({b}, {a})" in opt.links.index
+
+
+@pytest.mark.parametrize("to_from", [False, True])
+@pytest.mark.parametrize("n_intermediate", [1, 2, 3])
+def test_break_long_link_creates_complete_chain(
+    optimizer: GridOptimizer, n_intermediate: int, to_from: bool
+) -> None:
+    """Regression: _break_long_link must form an unbroken chain for any N.
+    """
+    optimizer._add_node("p-from", node_type="pole", x=0.0, y=0.0)
+    optimizer._add_node("p-to", node_type="pole", x=100.0, y=0.0)
+
+    inter_ids = [f"p-mid-{i}" for i in range(n_intermediate)]
+    for i, idx in enumerate(inter_ids):
+        x = (i + 1) * 100.0 / (n_intermediate + 1)
+        optimizer._add_node(idx, node_type="pole", type_fixed=True, x=x, y=0.0)
+
+    added_poles_df = optimizer._poles().loc[inter_ids]
+    added_poles = (added_poles_df, to_from)
+
+    optimizer._break_long_link("p-from", "p-to", added_poles)
+
+    assert len(optimizer.links) == n_intermediate + 1, (
+        f"Expected {n_intermediate + 1} links, got {len(optimizer.links)}: "
+        f"{list(optimizer.links.index)}"
+    )
+
+    # to_from=True: poles added from mst_to direction, so chain runs in reverse.
+    ordered_inter = list(reversed(inter_ids)) if to_from else inter_ids
+    chain = ["p-from"] + ordered_inter + ["p-to"]
+    for a, b in zip(chain, chain[1:]):
+        assert _has_link(optimizer, a, b), (
+            f"Missing link between {a} and {b}. Links present: {list(optimizer.links.index)}"
+        )
+
+    for idx in inter_ids:
+        assert optimizer.nodes.loc[idx, "how_added"] == "long-distance"
