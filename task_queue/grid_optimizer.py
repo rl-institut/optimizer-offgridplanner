@@ -1756,7 +1756,7 @@ class GridOptimizer:
         poles["type_fixed"] = False
         poles["is_connected"] = True
         # High-offset cluster labels avoid collision with k-means labels (0..n)
-        poles["cluster_label"] = 2000
+        poles["cluster_label"] = range(100000, 100000 + len(poles))
 
         self.nodes = pd.concat(
             [self.nodes, poles],
@@ -1810,9 +1810,6 @@ class GridOptimizer:
         consumers within connection_cable_max_length, then run k-means only on
         consumers that road poles could not reach.
         """
-        if "cluster_label" not in self.nodes.columns:
-            self.nodes["cluster_label"] = -1
-
         n_road_poles = self._sample_road_poles()
         if n_road_poles > 0:
             unassigned = self._associate_consumers_to_road_poles()
