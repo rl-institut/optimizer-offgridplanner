@@ -108,6 +108,27 @@ class GridOptimizer:
         self.start_execution_time = time.monotonic()
         self.grid_opt_json = grid_opt_json
         self.nodes = pd.DataFrame(self.grid_opt_json["nodes"])
+        self.road_geometries_xy = None  # will be computed in convert_lonlat_xy
+        self.roads = None
+        if "roads" in self.grid_opt_json:
+            roads = pd.DataFrame(self.grid_opt_json["roads"])
+            # Split polyline roads into single segments
+            rows = []
+            for _, road in roads.iterrows():
+                coords = road["coordinates"]
+                for i in range(len(coords) - 1):
+                    lat0, lon0 = coords[i]
+                    lat1, lon1 = coords[i + 1]
+                    rows.append({
+                        "road_id": f"{road["road_id"]}-{i}",
+                        "road_type": road["road_type"],
+                        "how_added": road["how_added"],
+                        "is_clicked": road["is_clicked"],
+                        "lat0": lat0, "lon0": lon0,
+                        "lat1": lat1, "lon1": lon1,
+                    })
+            self.roads = pd.DataFrame(rows)
+
         utm_zone = utm.from_latlon(
             latitude=self.nodes.latitude.mean(),
             longitude=self.nodes.longitude.mean(),
@@ -151,7 +172,6 @@ class GridOptimizer:
         self.distribution_cable_max_length = self.grid_design_dict[
             "distribution_cable"
         ]["max_length"]
-        self.road_geometries_xy = None # will be computed from self.grid_design_dict["roads"] in convert_lonlat_xy
 
 
     def optimize(self):
@@ -170,7 +190,7 @@ class GridOptimizer:
         else:
             power_house_consumers = None
         print("Determining number of poles...")
-        if self.grid_opt_json.get("roads"):
+        if "roads" in self.grid_opt_json:
             self._place_poles_with_roads()
         else:
             n_poles = self._find_opt_number_of_poles(n_grid_consumers)
