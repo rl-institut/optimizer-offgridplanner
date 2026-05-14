@@ -1184,6 +1184,8 @@ class GridOptimizer:
             for pole in leaf_poles:
                 if pole in exclude_lst:
                     continue
+                if pole not in self.nodes.index:
+                    continue
                 consumer_of_pole = self.nodes[self.nodes["parent"] == pole]
                 branch = self.nodes[self.nodes.index == pole]["branch"].iloc[0]
                 consumer_of_branch = self.nodes[self.nodes["branch"] == branch].index
@@ -1250,6 +1252,8 @@ class GridOptimizer:
 
     def _correct_n_distribution_links_of_parent_poles(self, pole):
         parent_pole = self.nodes[self.nodes.index == pole]["parent"].iloc[0]
+        if parent_pole == "unknown" or pd.isna(parent_pole):
+            return
         self.nodes.loc[parent_pole, "n_distribution_links"] -= 1
 
     def _determine_shs_consumers(self, max_iter=20):
