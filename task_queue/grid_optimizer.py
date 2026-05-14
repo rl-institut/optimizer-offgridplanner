@@ -819,10 +819,12 @@ class GridOptimizer:
                 self.nodes.loc[node_index, "x"] = x
                 self.nodes.loc[node_index, "y"] = y
 
-            self.road_geometries_xy = [
-                [p(lon, lat) for lat, lon in road_line]
-                for road_line in self.grid_opt_json.get("roads", [])
-            ]
+            if self.roads is not None:
+                x0, y0 = p(self.roads["lon0"].to_numpy(), self.roads["lat0"].to_numpy(),
+                           inverse=inverse)
+                x1, y1 = p(self.roads["lon1"].to_numpy(), self.roads["lat1"].to_numpy(),
+                           inverse=inverse)
+                self.roads[["x0", "y0", "x1", "y1"]] = np.column_stack([x0, y0, x1, y1])
 
             # store reference values for (x,y) to use later when converting (x,y) to (lon,lat)
 
@@ -1068,10 +1070,10 @@ class GridOptimizer:
                     (links["from_node"] == parent_pole) & (links["to_node"] == consumer)
                     ]
 
-            length = min(
-                link["length"].iloc[0],
-                3,
-            )
+                length = min(
+                    link["length"].iloc[0],
+                    3,
+                )
             connection_cost = (
                 self.grid_design_dict["mg"]["epc"]
                 + length * self.grid_design_dict["connection_cable"]["epc"]
@@ -1726,55 +1728,46 @@ class GridOptimizer:
         self.nodes.index = self.nodes.index.astype("str")
         self.convert_lonlat_xy(inverse=True)
 
-    def _sample_road_poles(self) -> pd.DataFrame:
+    def _sample_road_poles(self) -> int:
         """
         Sample candidate pole positions along road line geometries. Road coords are pre-projected to
         (x, y) in self.road_geometries by convert_lonlat_xy. Returns count of
         poles added.
         """
-        road_points = []
+        road_poles = []
 
-        for road_line in self.road_geometries_xy:
-            for i in range(len(road_line) - 1):
-                x0, y0 = road_line[i]
-                x1, y1 = road_line[i + 1]
-                seg_len = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
-                road_points.append((x0, y0))
-                if seg_len > self.distribution_cable_max_length:
-                    n_interior_poles = int(seg_len // self.distribution_cable_max_length)
-                    for k in range(1, n_interior_poles + 1):
-                        t = k / (n_interior_poles + 1)
-                        road_points.append((x0 + t * (x1 - x0), y0 + t * (y1 - y0)))
-            road_points.append(road_line[-1])
+        for _, road in self.roads.iterrows():
+            seg_len = math.sqrt((road.x1 - road.x0) ** 2 + (road.y1 - road.y0) ** 2)
+            # append start and end points as pole positions
+            road_poles.append((road.x0, road.y0))
+            road_poles.append((road.x1, road.y1))
+            # if segment is longer than max length, also add evenly distributed poles inside the segment
+            if seg_len > self.distribution_cable_max_length:
+                n_interior_poles = int(seg_len // self.distribution_cable_max_length)
+                for k in range(1, n_interior_poles + 1):
+                    t = k / (n_interior_poles + 1)
+                    road_poles.append((road.x0 + t * (road.x1 - road.x0), road.y0 + t * (road.y1 - road.y0)))
 
-        if not road_points:
-            return pd.DataFrame()
+        if not road_poles:
+            return 0
 
-        poles = pd.DataFrame(road_points, columns=["x", "y"])
+        poles = pd.DataFrame(road_poles, columns=["x", "y"])
         poles.index = "rp-" + poles.index.astype(str)
         poles["node_type"] = "pole"
         poles["consumer_type"] = "n.a."
         poles["consumer_detail"] = "n.a."
-        poles["is_connected"] = True
         poles["how_added"] = "road-sampled"
-        poles["latitude"] = 0.0
-        poles["longitude"] = 0.0
-        poles["distance_to_load_center"] = 0
-        # set to true??
-        poles["type_fixed"] = True
-        poles["n_connection_links"] = "0"
-        poles["n_distribution_links"] = 0
-        poles["parent"] = "unknown"
-        poles["distribution_cost"] = 0
+        poles["type_fixed"] = False
+        poles["is_connected"] = True
         # High-offset cluster labels avoid collision with k-means labels (0..n)
-        poles["cluster_label"] = range(1000)
+        poles["cluster_label"] = 2000
 
         self.nodes = pd.concat(
             [self.nodes, poles],
             axis=0,
         )
 
-        return poles
+        return len(poles)
 
     def _associate_consumers_to_road_poles(self) -> pd.Index:
         """
@@ -1797,7 +1790,7 @@ class GridOptimizer:
             best_pole = None
 
             for p_idx in road_pole_idxs:
-                if self.pole_max_connection > 0 and pole_counts[p_idx] >= self.pole_max_connection:
+                if pole_counts[p_idx] >= self.pole_max_connection:
                     continue
                 px = self.nodes.at[p_idx, "x"]
                 py = self.nodes.at[p_idx, "y"]
