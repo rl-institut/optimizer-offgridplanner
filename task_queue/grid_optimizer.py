@@ -210,7 +210,6 @@ class GridOptimizer:
 
         self.create_minimum_spanning_tree()
         self.connect_grid_consumers()
-        self.connect_grid_poles()
 
         if self.power_house is not None:
             self.nodes.loc[self.nodes.index == power_house_idx[0], "node_type"] = "power-house"
