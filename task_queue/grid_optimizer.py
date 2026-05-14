@@ -453,6 +453,7 @@ class GridOptimizer:
 
     def find_index_longest_distribution_link(self):
         # Find the links longer than two times of the allowed distance
+        self.distribution_links =  self.links[self.links["link_type"] == "distribution"]
         critical_link = self.distribution_links[
             self.distribution_links["length"] > self.distribution_cable_max_length
         ]
