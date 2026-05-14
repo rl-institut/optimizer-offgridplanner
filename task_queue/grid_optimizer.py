@@ -194,7 +194,8 @@ class GridOptimizer:
             self._place_poles_with_roads()
         else:
             n_poles = self._find_opt_number_of_poles(n_grid_consumers)
-            self.determine_poles(min_n_clusters=n_poles)
+            self._clear_poles()
+            self.kmeans_clustering(n_clusters=n_poles)
 
         if self.power_house is not None:
             cluster_label = self.nodes.loc["100000", "cluster_label"]
@@ -1830,12 +1831,6 @@ class GridOptimizer:
                 else 1
             )
             self.kmeans_clustering(n_clusters=n_kmeans, consumer_indices=unassigned)
-
-    def determine_poles(self, min_n_clusters):
-        """
-        Place poles using k-means clustering with the given number of clusters.
-        """
-        self.kmeans_clustering(n_clusters=min_n_clusters)
 
     def is_enough_poles(self, n):
         self._clear_poles()
