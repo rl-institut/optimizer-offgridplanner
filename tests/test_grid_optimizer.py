@@ -334,14 +334,16 @@ def test_clear_links_and_clear_all_links(optimizer: GridOptimizer) -> None:
 
 
 def test_find_index_longest_distribution_link(optimizer: GridOptimizer) -> None:
-    optimizer.distribution_links = pd.DataFrame(
-        {
-            "length": [99.0, 100.0, 101.0],
-        },
-        index=["short", "equal", "long"],
-    )
+    # Considering that max_length_distribution_link is 100m
+    optimizer._add_node("p-0", node_type="pole", x=0.0, y=0.0)
+    optimizer._add_node("p-1", node_type="pole", x=0.0, y=100.0)
+    optimizer._add_node("p-2", node_type="pole", x=0.0, y=200.0)
+    optimizer._add_node("p-3", node_type="pole", x=0.0, y=350.0)
+    optimizer._add_links("p-0", "p-1")
+    optimizer._add_links("p-1", "p-2")
+    optimizer._add_links("p-2", "p-3")
 
-    assert optimizer.find_index_longest_distribution_link() == ["long"]
+    assert optimizer.find_index_longest_distribution_link() == ['(p-2, p-3)']
 
 
 def test_add_number_of_distribution_and_connection_cables(
