@@ -813,3 +813,133 @@ def test_optimize_full_pipeline_simple_grid(simple_grid_payload: dict) -> None:
     )
 
 
+
+
+@pytest.fixture
+def shs_grid_payload() -> dict:
+    """3-consumer grid designed so that the isolated far consumer becomes SHS.
+
+    Layout (approx, power house at origin):
+
+        PH(0,0)   C0(40m E)   C1(40m N)   ...460m gap...   C2(500m E)
+
+    Near consumers (C0, C1): placed 40 m from PH — beyond the 30 m
+    connection-cable auto-attach threshold in _connect_power_house_consumer_manually
+    — so they go through k-means and get a proper cluster pole.
+    The near-cluster pole's marginal cost is ~0.4 (well below 1.0) so it is
+    never cut.
+
+    max_n_connections=3 gives 3 placeholder nodes at PH.  The binary search in
+    _find_opt_number_of_poles converges to 3 clusters (PH, near, far), which
+    cleanly separates C0/C1 from C2.  With only 2 clusters the k_means_constrained
+    capacity check (size_max x n_clusters >= n_samples) would fail.
+
+    Far consumer (C2): single consumer, ~500 m from PH.
+
+    Cost estimate for C2 (hand-calculated):
+      yearly_consumption  = 1200 / 3  = 400 Wh/year
+      distribution chain  = 5 poles x (epc_pole + ~96m x epc_dist)
+                          = 5 x (100 + 96x5) = 5 x 580 = 2900 currency/year
+      connection cost C2  = mg.epc = 50
+      marginal_cost       = (2900 + 50) / 400 = 7.4 currency/Wh
+      max_levelized_cost  = max_grid_cost / 1000  = 1000/1000 = 1.0
+
+    7.4 >> 1.0  ->  C2 pole is cut, C2 becomes SHS.
+    Intermediate long-distance poles then cascade-removed by
+    _cut_leaf_poles_without_connection (no consumers left on that branch).
+    """
+    return {
+        "nodes": {
+            # 40 m E / N of PH so _connect_power_house_consumer_manually
+            # (threshold = connection_cable.max_length = 30 m) does NOT
+            # grab C0/C1 before k-means runs.
+            "latitude":  [1.0,       1.000360, 1.0,       1.0],
+            "longitude": [10.000359, 10.0,     10.004493, 10.0],
+            "node_type": ["consumer", "consumer", "consumer", "power-house"],
+            "consumer_type":   ["household", "household", "household", "n.a."],
+            "consumer_detail": ["default",   "default",   "default",   "n.a."],
+            "how_added":       ["manual",    "manual",    "manual",    "manual"],
+            "is_connected":    [True,        True,        True,        True],
+            "shs_options":     [0,           0,           0,           0],
+            "custom_specification": ["", "", "", ""],
+        },
+        "grid_design": {
+            "distribution_cable": {"max_length": 100.0, "epc": 5.0},
+            "connection_cable":   {"max_length": 30.0,  "epc": 2.0},
+            # 3 connections/pole -> binary search finds 3 clusters (PH + near + far)
+            "pole":               {"max_n_connections": 3, "epc": 100.0},
+            "mg":                 {"epc": 50.0},
+            "shs":                {"include": True, "max_grid_cost": 1_000.0},
+        },
+        "yearly_demand": 1_200.0,
+    }
+
+
+@pytest.mark.integration
+def test_optimize_full_pipeline_shs_consumer(shs_grid_payload: dict) -> None:
+    """End-to-end: optimizer assigns isolated far consumer to SHS.
+
+    Consumer "2" (C2, 500m east) is too expensive to connect relative to the
+    SHS threshold — the optimizer should cut its pole and mark it SHS.
+    Consumers "0" and "1" (near cluster, ~40m from PH) must stay grid-connected.
+
+    Also verifies the intermediate long-distance poles are cascade-removed by
+    _cut_leaf_poles_without_connection after the far cluster pole is cut —
+    the remaining grid contains only the near cluster.
+    """
+    pytest.importorskip("scipy")
+    pytest.importorskip("utm")
+    pytest.importorskip("k_means_constrained")
+    pytest.importorskip("pyproj")
+
+    grid_opt = GridOptimizer(shs_grid_payload)
+    result = grid_opt.optimize()
+
+    nodes_out = result["nodes"]
+
+    label_to_idx = {lbl: i for i, lbl in enumerate(nodes_out["label"])}
+
+    # --- Near consumers remain grid-connected with a parent ---
+    for consumer_label in ("0", "1"):
+        i = label_to_idx[consumer_label]
+        assert nodes_out["is_connected"][i] is True, (
+            f"Near consumer {consumer_label} should be grid-connected"
+        )
+        assert nodes_out["parent"][i] is not None, (
+            f"Near consumer {consumer_label} should have a parent pole"
+        )
+
+    # --- Far isolated consumer assigned to SHS ---
+    i = label_to_idx["2"]
+    assert nodes_out["is_connected"][i] is False, (
+        "Consumer '2' (500m isolated) should be SHS (is_connected=False)"
+    )
+    assert nodes_out["parent"][i] is None, (
+        "Consumer '2' (SHS) should have no parent"
+    )
+
+    # --- No orphaned poles: every remaining pole reachable from power house ---
+    dist_links = grid_opt.links[grid_opt.links["link_type"] == "distribution"]
+    power_house_idx = grid_opt.nodes[
+        grid_opt.nodes["node_type"] == "power-house"
+    ].index[0]
+    all_poles = grid_opt.nodes[
+        grid_opt.nodes["node_type"].isin(["pole", "power-house"])
+    ].index
+
+    reachable: set = {power_house_idx}
+    queue = [power_house_idx]
+    while queue:
+        current = queue.pop()
+        neighbors = set(
+            dist_links[dist_links["from_node"] == current]["to_node"].tolist()
+            + dist_links[dist_links["to_node"] == current]["from_node"].tolist()
+        )
+        for neighbor in neighbors - reachable:
+            reachable.add(neighbor)
+            queue.append(neighbor)
+
+    unreachable = [p for p in all_poles if p not in reachable]
+    assert not unreachable, (
+        f"Poles not reachable from power house after SHS pruning: {unreachable}"
+    )
