@@ -665,3 +665,151 @@ def test_break_long_link_creates_complete_chain(
 
     for idx in inter_ids:
         assert optimizer.nodes.loc[idx, "how_added"] == "long-distance"
+
+
+# ---------------------------------------------------------------------------
+# Full-pipeline integration test
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def simple_grid_payload() -> dict:
+    """4-consumer grid, hand-calculable layout.
+
+    At lat=1.0, lon=10.0 (UTM zone 32):
+      - 0.00009 deg ≈ 10 m
+      - 0.00270 deg ≈ 300 m
+
+    Layout (approx, power house at origin):
+
+        PH(0,0)   C0(10m E)   C1(10m N)   ...295m gap...   C2(300m E)   C3(300m E, 10m N)
+
+    Near cluster (C0, C1):  centroid ≈ 7m NE of PH
+    Far  cluster (C2, C3):  centroid ≈ 300m E of PH
+
+    distribution_cable.max_length=100m  →  the ~295m near-to-far pole span forces
+    intermediate poles (ceil(295/100)-1 = 2 poles inserted).
+    SHS threshold set astronomically high so all consumers stay grid-connected.
+    max_n_connections=3, so 2 consumers/pole is within limit.
+    """
+    return {
+        "nodes": {
+            "latitude":  [1.0,       1.000090, 1.0,       1.000090, 1.0],
+            "longitude": [10.000090, 10.0,     10.002700, 10.002700, 10.0],
+            "node_type": ["consumer", "consumer", "consumer", "consumer", "power-house"],
+            "consumer_type":   ["household", "household", "household", "household", "n.a."],
+            "consumer_detail": ["default",   "default",   "default",   "default",   "n.a."],
+            "how_added":       ["manual",    "manual",    "manual",    "manual",    "manual"],
+            "is_connected":    [True,        True,        True,        True,        True],
+            "shs_options":     [0,           0,           0,           0,           0],
+            "custom_specification": ["", "", "", "", ""],
+        },
+        "grid_design": {
+            "distribution_cable": {"max_length": 100.0, "epc": 5.0},
+            "connection_cable":   {"max_length": 30.0,  "epc": 2.0},
+            "pole":               {"max_n_connections": 3, "epc": 100.0},
+            "mg":                 {"epc": 50.0},
+            "shs":                {"include": True, "max_grid_cost": 1_000_000.0},
+        },
+        "yearly_demand": 1_200.0,
+    }
+
+
+
+@pytest.mark.integration
+def test_optimize_full_pipeline_simple_grid(simple_grid_payload: dict) -> None:
+    """End-to-end smoke test: verifies the full optimize() chain on a minimal,
+    hand-calculable grid.
+
+    What this catches:
+    - Long link breaking: intermediate poles inserted, all distribution links ≤ max_length
+    - Clustering: all 4 consumers assigned to a pole (parent set)
+    - Connectivity: every pole reachable from power house via distribution links
+    - Pole connection limit: n_connection_links ≤ max_n_connections for every pole
+    - No consumer left behind: all 4 are grid-connected (SHS threshold is very high)
+    """
+    pytest.importorskip("scipy")
+    pytest.importorskip("utm")
+    pytest.importorskip("k_means_constrained")
+    pytest.importorskip("pyproj")
+
+    dist_max = 100.0
+    conn_max = 30.0
+    max_n_conn = 3
+
+    grid_opt = GridOptimizer(simple_grid_payload)
+    result = grid_opt.optimize()
+
+    nodes_out = result["nodes"]
+    links_out = result["links"]
+
+    # --- All 4 input consumers present, connected, and parented ---
+    consumer_positions = [
+        i for i, t in enumerate(nodes_out["node_type"]) if t == "consumer"
+    ]
+    assert len(consumer_positions) == 4
+
+    for i in consumer_positions:
+        assert nodes_out["is_connected"][i] is True, (
+            f"Consumer at index {i} should be grid-connected"
+        )
+        assert nodes_out["parent"][i] is not None, (
+            f"Consumer at index {i} should have a parent pole"
+        )
+
+    # --- No link exceeds its cable max length ---
+    for label, ltype, length in zip(
+        links_out["label"], links_out["link_type"], links_out["length"]
+    ):
+        if ltype == "distribution":
+            assert length <= dist_max, (
+                f"Distribution link {label} length {length:.1f}m > max {dist_max}m"
+            )
+        elif ltype == "connection":
+            assert length <= conn_max, (
+                f"Connection link {label} length {length:.1f}m > max {conn_max}m"
+            )
+
+    # --- At least one intermediate (long-distance) pole was inserted ---
+    long_distance_poles = grid_opt.nodes[
+        grid_opt.nodes["how_added"] == "long-distance"
+    ]
+    assert len(long_distance_poles) >= 1, (
+        "No intermediate pole found; long link breaking did not fire"
+    )
+
+    # --- Pole connection-link count within limit ---
+    for pole_idx, row in grid_opt.nodes[
+        grid_opt.nodes["node_type"] == "pole"
+    ].iterrows():
+        assert row["n_connection_links"] <= max_n_conn, (
+            f"Pole {pole_idx} has {row['n_connection_links']} connection links "
+            f"(max {max_n_conn})"
+        )
+
+    # --- Full network connectivity: all poles reachable from power house ---
+    dist_links = grid_opt.links[grid_opt.links["link_type"] == "distribution"]
+    power_house_idx = grid_opt.nodes[
+        grid_opt.nodes["node_type"] == "power-house"
+    ].index[0]
+    all_poles = grid_opt.nodes[
+        grid_opt.nodes["node_type"].isin(["pole", "power-house"])
+    ].index
+
+    reachable: set = {power_house_idx}
+    queue = [power_house_idx]
+    while queue:
+        current = queue.pop()
+        neighbors = set(
+            dist_links[dist_links["from_node"] == current]["to_node"].tolist()
+            + dist_links[dist_links["to_node"] == current]["from_node"].tolist()
+        )
+        for neighbor in neighbors - reachable:
+            reachable.add(neighbor)
+            queue.append(neighbor)
+
+    unreachable = [p for p in all_poles if p not in reachable]
+    assert not unreachable, (
+        f"Poles not reachable from power house: {unreachable}"
+    )
+
+
