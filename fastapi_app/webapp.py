@@ -47,9 +47,15 @@ templates = Jinja2Templates(directory=os.path.join(SERVER_ROOT, "templates"))
 # Test Driven Development --> https://fastapi.tiangolo.com/tutorial/testing/
 
 def validate_simulation_queue(queue):
-    if queue not in ["grid", "supply"]:
-        raise HTTPException(status_code=400, detail=f'{queue} is not an accepted argument. Simulation options are "grid" or "supply"')
+    if queue not in ["grid", "grid_dev", "supply"]:
+        raise HTTPException(status_code=400, detail=f'{queue} is not an accepted argument. Simulation options are "grid", "grid_dev", or "supply"')
     return
+
+
+def _task_name_for_queue(queue: str) -> str:
+    if queue == "grid_dev":
+        return "grid.run_simulation"
+    return f"{queue}.run_simulation"
 
 @app.get("/")
 def index(request: Request) -> Response:
@@ -69,7 +75,7 @@ async def simulate_json_variable(request: Request, queue: str = "supply"):
 
     # send the task to celery
     task = celery_app.send_task(
-        f"{queue}.run_simulation", args=[input_dict], queue=queue, kwargs={}
+        _task_name_for_queue(queue), args=[input_dict], queue=queue, kwargs={}
     )
     queue_answer = await check_task(task.id)
 
@@ -108,7 +114,7 @@ def run_simulation(request: Request, input_json=None, queue="supply") -> Respons
 
     # send the task to celery
     task = celery_app.send_task(
-        f"{queue}.run_simulation", args=[input_dict], queue=queue, kwargs={}
+        _task_name_for_queue(queue), args=[input_dict], queue=queue, kwargs={}
     )
 
     return templates.TemplateResponse(
@@ -150,7 +156,8 @@ async def revoke_task(task_id: str) -> JSONResponse:
 
 @app.get("/schema/{queue}/{variant}")
 def get_schema(queue: str, variant: str):
-    schema_file = f"{queue}_schema"
+    schema_queue = "grid" if queue == "grid_dev" else queue
+    schema_file = f"{schema_queue}_schema"
     schema_path = os.path.join(os.path.dirname(__file__), "static", f"{schema_file}.py")
 
     if not os.path.isfile(schema_path):
