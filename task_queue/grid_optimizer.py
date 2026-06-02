@@ -154,6 +154,7 @@ class GridOptimizer:
 
     def optimize(self):
         print("Optimizing distribution grid...")
+        self.fixed_poles = self._extract_fixed_poles()
         self.convert_lonlat_xy()
         self._clear_poles()
         n_total_consumers = len(self.nodes)
@@ -217,7 +218,7 @@ class GridOptimizer:
                     break
             else:
                 break
-
+        self._reposition_fixed_poles()
         return self._process_results()
 
     def _process_results(self):
@@ -1787,3 +1788,36 @@ class GridOptimizer:
                 for next_n in space:
                     if next_n == space.iloc[-1] or self.is_enough_poles(next_n) is True:
                         return next_n
+
+    def _extract_fixed_poles(self):
+        fixed = self.nodes[
+            (self.nodes["node_type"] == "pole") &
+            (self.nodes["is_fixed"] == 1.0)
+        ].copy()
+        print(fixed[["latitude", "longitude"]])
+        return fixed[["latitude", "longitude"]]
+
+    def _reposition_fixed_poles(self):
+        if self.fixed_poles is None or len(self.fixed_poles) == 0:
+            return
+
+        for _, fixed_pole in self.fixed_poles.iterrows():
+            lat_fixed = fixed_pole["latitude"]
+            lon_fixed = fixed_pole["longitude"]
+
+            nearest_pole_label = None
+            min_distance = float("inf")
+
+            for pole_label in self._poles().index:
+                lat = self.nodes.latitude.loc[pole_label]
+                lon = self.nodes.longitude.loc[pole_label]
+
+                dist = self.haversine_distance(lat, lon, lat_fixed, lon_fixed)
+
+                if dist < min_distance:
+                    min_distance = dist
+                    nearest_pole_label = pole_label
+
+            if nearest_pole_label is not None:
+                self.nodes.loc[nearest_pole_label, "latitude"] = lat_fixed
+                self.nodes.loc[nearest_pole_label, "longitude"] = lon_fixed
