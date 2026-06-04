@@ -206,6 +206,8 @@ class GridOptimizer:
             power_house_consumers["consumer_type"] = np.nan
             self.nodes = pd.concat([self.nodes, power_house_consumers])
             self._placeholder_consumers_for_power_house(remove=True)
+            # Drop old power house index to avoid duplicates
+            self.nodes = self.nodes.drop(index=self.power_house.index)
 
         self.create_minimum_spanning_tree()
         self.connect_grid_consumers()
@@ -1860,3 +1862,8 @@ class GridOptimizer:
                 for next_n in space:
                     if next_n == space.iloc[-1] or self.is_enough_poles(next_n) is True:
                         return next_n
+
+
+
+
+
