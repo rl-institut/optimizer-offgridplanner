@@ -214,6 +214,10 @@ class GridOptimizer:
             self.nodes.loc[self.nodes.index == power_house_idx[0], "node_type"] = "power-house"
             self.nodes.loc[self.nodes.index == power_house_idx[0], "how_added"] = "manual"
 
+        # Populate self.links with distribution links so find_index_longest_distribution_link
+        # can detect links that exceed max_length. A second call follows after intermediate
+        # poles have been inserted to rebuild distribution links with long links broken.
+        self.connect_grid_poles()
         # Find the connection links_df in the network with lengths greater than the
         # maximum allowed length for `connection` cables, specified by the user.
         long_links = self.find_index_longest_distribution_link()
