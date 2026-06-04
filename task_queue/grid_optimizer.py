@@ -206,6 +206,8 @@ class GridOptimizer:
             power_house_consumers["consumer_type"] = np.nan
             self.nodes = pd.concat([self.nodes, power_house_consumers])
             self._placeholder_consumers_for_power_house(remove=True)
+            # Drop old power house index to avoid duplicates
+            self.nodes = self.nodes.drop(index=self.power_house.index)
 
         self.create_minimum_spanning_tree()
         self.connect_grid_consumers()
@@ -1861,3 +1863,58 @@ class GridOptimizer:
                 for next_n in space:
                     if next_n == space.iloc[-1] or self.is_enough_poles(next_n) is True:
                         return next_n
+
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    import matplotlib.lines as mlines
+
+
+    def plot_grid(opt):
+        fig, ax = plt.subplots(figsize=(12, 10))
+
+        # Roads
+        # if opt.roads is not None:
+        #     for _, r in opt.roads.iterrows():
+        #         ax.plot([r.lon0, r.lon1], [r.lat0, r.lat1], color="#cccccc", lw=1.5,
+        #                 zorder=1)
+
+        # Links
+        for _, lk in opt.links.iterrows():
+            color = "#2196F3" if lk.link_type == "distribution" else "#FF9800"
+            ax.plot([lk.lon_from, lk.lon_to], [lk.lat_from, lk.lat_to],
+                    color=color, lw=1, zorder=2)
+
+        # Nodes
+        style = {
+            "consumer": dict(marker=".", s=20, color="#4CAF50", zorder=4),
+            "pole": dict(marker="s", s=40, color="#E53935", zorder=5),
+            "power-house": dict(marker="*", s=200, color="#FFD600", zorder=6),
+        }
+        for ntype, kw in style.items():
+            sub = opt.nodes[opt.nodes.node_type == ntype]
+            if not sub.empty:
+                ax.scatter(sub.longitude, sub.latitude, label=ntype, **kw)
+
+        # Legend
+        handles = [
+            mlines.Line2D([], [], color="#cccccc", lw=1.5, label="road"),
+            mlines.Line2D([], [], color="#2196F3", lw=1, label="distribution link"),
+            mlines.Line2D([], [], color="#FF9800", lw=1, label="connection link"),
+            *ax.get_legend_handles_labels()[0],
+        ]
+        ax.legend(handles=handles, fontsize=8)
+        ax.set_xlabel("longitude");
+        ax.set_ylabel("latitude")
+        ax.set_title("Grid optimization result")
+        plt.tight_layout()
+        plt.show()
+
+
+    with open('grid_opt_with_roads.json') as json_data:
+        d = json.load(json_data)
+        grid_opt = GridOptimizer(d)
+        res = grid_opt.optimize()
+        plot_grid(grid_opt)
+
