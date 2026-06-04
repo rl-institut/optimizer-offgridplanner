@@ -506,6 +506,7 @@ class GridOptimizer:
         self,
         long_links,
     ):
+        # TODO here probably the place to again add poles but keep to roads
         for long_link in long_links:
             # Get start and end coordinates of the long link.
             x_from = self.links.x_from[long_link]
