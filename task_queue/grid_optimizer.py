@@ -123,7 +123,6 @@ class GridOptimizer:
                         "road_id": f"{road["road_id"]}-{i}",
                         "road_type": road["road_type"],
                         "how_added": road["how_added"],
-                        "is_clicked": road["is_clicked"],
                         "lat0": lat0, "lon0": lon0,
                         "lat1": lat1, "lon1": lon1,
                     })
