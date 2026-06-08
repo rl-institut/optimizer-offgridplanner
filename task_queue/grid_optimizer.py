@@ -183,15 +183,36 @@ class GridOptimizer:
 
     def optimize(self):
         print("Optimizing distribution grid...")
+        n_grid_consumers = self._setup_coordinates()
+        print("Determining number of poles...")
+        self._place_poles(n_grid_consumers)
+        self._connect_nodes()
+        print("Determining distribution links...")
+        self._insert_long_link_poles()
+        print("Determining power house location...")
+        self._run_cost_and_shs_loop()
+        return self._process_results()
+
+    def _setup_coordinates(self) -> int:
+        """Convert to projected coords, build road graph, clear stale poles.
+
+        Returns n_grid_consumers for use by _place_poles.
+        """
         self.convert_lonlat_xy()
         if self.roads is not None:
             self._build_road_graph()
         # Drop ALL poles from previous runs -> _clear_poles() preserves road-sampled poles
         self.nodes = self.nodes[self.nodes["node_type"] != "pole"]
-        n_total_consumers = len(self.nodes)
         n_shs_consumers = len(self.nodes[self.nodes["is_connected"] == False])  # noqa: E712
-        n_grid_consumers = n_total_consumers - n_shs_consumers
+        n_grid_consumers = len(self.nodes) - n_shs_consumers
         self.nodes = self.nodes.sort_index(key=lambda x: x.astype("int64"))
+        return n_grid_consumers
+
+    def _place_poles(self, n_grid_consumers: int):
+        """Place k-means or road-sampled poles. Handles power-house consumer placeholder.
+
+        Stores _power_house_idx on self for use by _connect_nodes.
+        """
         if self.power_house is not None:
             power_house_consumers = self._connect_power_house_consumer_manually(
                 self.connection_cable_max_length,
@@ -199,7 +220,7 @@ class GridOptimizer:
             self._placeholder_consumers_for_power_house()
         else:
             power_house_consumers = None
-        print("Determining number of poles...")
+
         if self.roads is not None:
             self._place_poles_with_roads()
         else:
@@ -209,7 +230,7 @@ class GridOptimizer:
 
         if self.power_house is not None:
             cluster_label = self.nodes.loc["100000", "cluster_label"]
-            power_house_idx = self.nodes[
+            self._power_house_idx = self.nodes[
                 (self.nodes["node_type"] == "pole")
                 & (self.nodes["cluster_label"] == cluster_label)
             ].index
@@ -217,44 +238,36 @@ class GridOptimizer:
             power_house_consumers["consumer_type"] = np.nan
             self.nodes = pd.concat([self.nodes, power_house_consumers])
             self._placeholder_consumers_for_power_house(remove=True)
-            # Drop old power house index to avoid duplicates
             self.nodes = self.nodes.drop(index=self.power_house.index)
+        else:
+            self._power_house_idx = None
 
+    def _connect_nodes(self):
+        """Build MST distribution backbone and connect consumers to their poles."""
         self.create_minimum_spanning_tree()
         self.connect_grid_consumers()
+        if self.power_house is not None and self._power_house_idx is not None:
+            ph = self._power_house_idx[0]
+            self.nodes.loc[self.nodes.index == ph, "node_type"] = "power-house"
+            self.nodes.loc[self.nodes.index == ph, "how_added"] = "manual"
 
-        if self.power_house is not None:
-            self.nodes.loc[self.nodes.index == power_house_idx[0], "node_type"] = "power-house"
-            self.nodes.loc[self.nodes.index == power_house_idx[0], "how_added"] = "manual"
-
-        # Populate self.links with distribution links so find_index_longest_distribution_link
-        # can detect links that exceed max_length. A second call follows after intermediate
-        # poles have been inserted to rebuild distribution links with long links broken.
+    def _insert_long_link_poles(self):
+        """Find over-length distribution links, insert intermediate poles, and reconnect."""
         self.connect_grid_poles()
-        # Find the connection links_df in the network with lengths greater than the
-        # maximum allowed length for `connection` cables, specified by the user.
         long_links = self.find_index_longest_distribution_link()
-        # Add poles to the identified long `distribution` links_df, so that the
-        # distance between all poles remains below the maximum allowed distance.
         self._add_fixed_poles_on_long_links(long_links=long_links)
-        # Update the (lon,lat) coordinates based on the newly inserted poles
-        # which only have (x,y) coordinates.
         self.convert_lonlat_xy(inverse=True)
-        # Connect all poles together using the minimum spanning tree algorithm.
-        print("Determining distribution links...")
         self.connect_grid_poles(long_links=long_links)
-        # Calculate distances of all poles from the load centroid.
-        # Find the location of the power house.
         self.add_number_of_distribution_and_connection_cables()
+
+    def _run_cost_and_shs_loop(self):
+        """Iteratively place power house, compute costs, and determine SHS consumers."""
         n_iter = 2 if self.power_house is None else 1
-        print("Determining power house location...")
         for i in range(n_iter):
             if self.power_house is None and i == 0:
                 self._select_location_of_power_house()
             self._set_direction_of_links()
-            self.allocate_poles_to_branches()
-            self.allocate_subbranches_to_branches()
-            self.label_branch_of_consumers()
+            self._build_branch_hierarchy()
             self.determine_cost_per_pole()
             self._connection_cost_per_consumer()
             self.determine_costs_per_branch()
@@ -275,8 +288,6 @@ class GridOptimizer:
                     break
             else:
                 break
-
-        return self._process_results()
 
     def _process_results(self):
         """
@@ -911,7 +922,14 @@ class GridOptimizer:
             self.nodes["n_connection_links"].fillna(0).astype(int)
         )
 
-    def allocate_poles_to_branches(self):
+    def _build_branch_hierarchy(self):
+        """Assign branch and parent_branch labels to all poles and consumers.
+
+        Runs the three allocation steps in the required order:
+        1. assign branch labels to poles (allocate_poles_to_branches)
+        2. assign parent_branch labels to poles (allocate_subbranches_to_branches)
+        3. propagate branch labels to consumers (label_branch_of_consumers)
+        """
         poles = self._poles().copy()
         leaf_poles = pd.Series(
             poles[poles["n_distribution_links"] == 1].index
@@ -957,7 +975,27 @@ class GridOptimizer:
             "branch",
         ] = power_house
 
-    def label_branch_of_consumers(self):
+        # --- parent_branch assignment ---
+        poles = self._poles().copy()
+        self.nodes["parent_branch"] = None
+
+        if len(poles["branch"].unique()) > 1:
+            leaf_poles_idx = poles[poles["n_distribution_links"] == 1].index
+            self._determine_parent_branches(leaf_poles_idx)
+            poles_excl_ph = poles[poles["node_type"] != "power-house"]
+            split_poles_idx = poles_excl_ph[
+                poles_excl_ph["n_distribution_links"] > 2  # noqa: PLR2004
+            ].index
+            if len(split_poles_idx) > 0:
+                self._determine_parent_branches(split_poles_idx)
+
+        self.nodes.loc[
+            (self.nodes["parent_branch"].isna())
+            & (self.nodes["node_type"].isin(["pole", "power-house"])),
+            "parent_branch",
+        ] = power_house
+
+        # --- propagate branch to consumers ---
         branch_map = self.nodes.loc[
             self.nodes.node_type.isin(["pole", "power-house"]),
             "branch",
@@ -967,7 +1005,7 @@ class GridOptimizer:
             "parent",
         ].map(branch_map)
 
-    def determine_parent_branches(self, start_poles):
+    def _determine_parent_branches(self, start_poles):
         poles = self._poles().copy()
         for pole in start_poles:
             branch_start_pole = poles[poles.index == pole]["branch"].iloc[0]
@@ -979,27 +1017,6 @@ class GridOptimizer:
                 self.nodes["branch"] == branch_start_pole,
                 "parent_branch",
             ] = parent_branch
-
-    def allocate_subbranches_to_branches(self):
-        poles = self._poles().copy()
-        self.nodes["parent_branch"] = None
-        power_house = poles[poles["node_type"] == "power-house"].index[0]
-
-        if len(poles["branch"].unique()) > 1:
-            leaf_poles = poles[poles["n_distribution_links"] == 1].index
-            self.determine_parent_branches(leaf_poles)
-            poles_expect_power_house = poles[poles["node_type"] != "power-house"]
-            split_poles = poles_expect_power_house[
-                poles_expect_power_house["n_distribution_links"] > 2  # noqa: PLR2004
-            ].index
-            if len(split_poles) > 0:
-                self.determine_parent_branches(split_poles)
-
-        self.nodes.loc[
-            (self.nodes["parent_branch"].isna())
-            & (self.nodes["node_type"].isin(["pole", "power-house"])),
-            "parent_branch",
-        ] = power_house
 
     def determine_cost_per_pole(self):
         poles = self._poles().copy()
