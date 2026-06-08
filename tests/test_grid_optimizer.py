@@ -945,3 +945,157 @@ def test_optimize_full_pipeline_shs_consumer(shs_grid_payload: dict) -> None:
     assert not unreachable, (
         f"Poles not reachable from power house after SHS pruning: {unreachable}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Road graph construction and road-following intermediate poles
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+def test_build_road_graph_creates_correct_weighted_adjacency(
+    optimizer: GridOptimizer,
+) -> None:
+    """_build_road_graph produces a symmetric sparse adjacency matrix with correct weights.
+
+    Hand-calculable triangle (all lengths exact integers or 3-4-5 right triangles):
+
+        V0 = (0, 0)   V1 = (3, 4)   V2 = (6, 0)
+
+        V0 → V1 : sqrt(3²+4²) = 5 m
+        V1 → V2 : sqrt(3²+4²) = 5 m
+        V0 → V2 : 6 m
+
+    Expected 3×3 symmetric graph (row/col indexed by vertex):
+
+        V0  [  0   5   6 ]
+        V1  [  5   0   5 ]
+        V2  [  6   5   0 ]
+    """
+    pytest.importorskip("scipy")
+
+    optimizer.roads = pd.DataFrame({
+        "x0": [0.0, 3.0, 0.0],
+        "y0": [0.0, 4.0, 0.0],
+        "x1": [3.0, 6.0, 6.0],
+        "y1": [4.0, 0.0, 0.0],
+    })
+    optimizer._build_road_graph()
+
+    assert optimizer._road_graph.shape == (3, 3), "Expected 3 unique vertices"
+    assert len(optimizer._road_vertices) == 3
+
+    verts = optimizer._road_vertices
+
+    def vidx(x, y):
+        for i, (vx, vy) in enumerate(verts):
+            if abs(vx - x) < 0.01 and abs(vy - y) < 0.01:
+                return i
+        raise AssertionError(f"Vertex ({x}, {y}) not found in {list(verts)}")
+
+    i0 = vidx(0, 0)
+    i1 = vidx(3, 4)
+    i2 = vidx(6, 0)
+    assert len({i0, i1, i2}) == 3, "Vertices not distinct"
+
+    dense = optimizer._road_graph.toarray()
+
+    assert dense[i0, i1] == pytest.approx(5.0), "V0-V1 edge weight wrong"
+    assert dense[i1, i0] == pytest.approx(5.0), "Graph not symmetric at V0-V1"
+    assert dense[i1, i2] == pytest.approx(5.0), "V1-V2 edge weight wrong"
+    assert dense[i2, i1] == pytest.approx(5.0), "Graph not symmetric at V1-V2"
+    assert dense[i0, i2] == pytest.approx(6.0), "V0-V2 edge weight wrong"
+    assert dense[i2, i0] == pytest.approx(6.0), "Graph not symmetric at V0-V2"
+
+    assert dense[i0, i0] == 0.0
+    assert dense[i1, i1] == 0.0
+    assert dense[i2, i2] == 0.0
+
+    # 3 undirected edges → 6 non-zero entries
+    assert optimizer._road_graph.nnz == 6
+
+
+@pytest.mark.integration
+def test_build_road_graph_deduplicates_shared_endpoints(
+    optimizer: GridOptimizer,
+) -> None:
+    """Shared segment endpoints produce a single vertex, not duplicates.
+
+    Two collinear segments: (0,0)→(100,0) and (100,0)→(200,0).
+    The shared endpoint (100,0) must appear exactly once → 3 vertices total,
+    not 4.  The graph must be a simple path V0-V1-V2 (2 edges).
+    """
+    pytest.importorskip("scipy")
+
+    optimizer.roads = pd.DataFrame({
+        "x0": [0.0,   100.0],
+        "y0": [0.0,   0.0],
+        "x1": [100.0, 200.0],
+        "y1": [0.0,   0.0],
+    })
+    optimizer._build_road_graph()
+
+    assert optimizer._road_graph.shape == (3, 3), "Shared endpoint must be deduplicated"
+    assert optimizer._road_graph.nnz == 4   # 2 edges × 2 directions
+
+
+@pytest.mark.integration
+def test_road_following_places_intermediate_poles_along_road(
+    optimizer: GridOptimizer,
+) -> None:
+    """Intermediate poles on long links follow road geometry, not a straight line.
+
+    Layout (UTM metres):
+
+        A(0,0) -------- B(300,0)   straight line (y=0)
+
+        A(0,0)          B(300,0)
+           |             |
+           |             |
+        (0,150) ---- (300,150)   road runs along y=150
+
+    distribution_cable_max_length = 100 m.
+    Straight-line A→B = 300 m → 2 intermediate poles, both at y = 0.
+    Road path A→B = 600 m → 5 intermediate poles, all at y > 0.
+    """
+    pytest.importorskip("scipy")
+
+    optimizer.roads = pd.DataFrame({
+        "x0": [0.0,   0.0,   300.0],
+        "y0": [0.0,   150.0, 150.0],
+        "x1": [0.0,   300.0, 300.0],
+        "y1": [150.0, 150.0, 0.0],
+    })
+    optimizer._build_road_graph()
+
+    waypoints = optimizer._road_path_between(0.0, 0.0, 300.0, 0.0)
+    assert waypoints is not None, "No road path found — U-shaped road should connect (0,0) to (300,0)"
+
+    raw = GridOptimizer._sample_points_along_polyline(
+        waypoints, optimizer.distribution_cable_max_length
+    )
+    # Drop positions coinciding with endpoints (same filter as production code).
+    poles = [
+        (px, py) for px, py in raw
+        if math.sqrt((px - 0.0) ** 2 + (py - 0.0) ** 2) > 1.0
+        and math.sqrt((px - 300.0) ** 2 + (py - 0.0) ** 2) > 1.0
+    ]
+
+    assert len(poles) >= 3, (
+        f"Expected at least 3 intermediate poles along 600 m road path, got {len(poles)}: {poles}"
+    )
+
+    for px, py in poles:
+        assert py > 1.0, (
+            f"Pole at ({px:.1f}, {py:.1f}) lies on the straight line (y≈0) — "
+            f"road following did not activate. All road poles should have y > 0."
+        )
+
+    # Consecutive poles (plus endpoints) must not exceed max_length.
+    chain = [(0.0, 0.0)] + poles + [(300.0, 0.0)]
+    max_len = optimizer.distribution_cable_max_length
+    for (ax, ay), (bx, by) in zip(chain, chain[1:]):
+        dist = math.sqrt((bx - ax) ** 2 + (by - ay) ** 2)
+        assert dist <= max_len + 1.0, (
+            f"Gap between ({ax:.0f},{ay:.0f}) and ({bx:.0f},{by:.0f}) = {dist:.1f} m "
+            f"> max {max_len} m"
+        )
