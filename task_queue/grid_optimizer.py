@@ -87,7 +87,8 @@ import numpy as np
 import pandas as pd
 from k_means_constrained import KMeansConstrained
 from pyproj import Proj
-from scipy.sparse.csgraph import minimum_spanning_tree
+from scipy.sparse import lil_matrix
+from scipy.sparse.csgraph import minimum_spanning_tree, shortest_path
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,28 @@ class GridOptimizer:
         self.start_execution_time = time.monotonic()
         self.grid_opt_json = grid_opt_json
         self.nodes = pd.DataFrame(self.grid_opt_json["nodes"])
+        self.road_geometries_xy = None  # will be computed in convert_lonlat_xy
+        self.roads = None
+        if "roads" in self.grid_opt_json:
+            roads = pd.DataFrame(self.grid_opt_json["roads"])
+            if not roads.empty:
+                # Split polyline roads into single segments
+                rows = []
+                for _, road in roads.iterrows():
+                    coords = road["coordinates"]
+                    for i in range(len(coords) - 1):
+                        lat0, lon0 = coords[i]
+                        lat1, lon1 = coords[i + 1]
+                        rows.append({
+                            "road_id": f"{road["road_id"]}-{i}",
+                            "parent_road_id": road["road_id"],
+                            "road_type": road["road_type"],
+                            "how_added": road["how_added"],
+                            "lat0": lat0, "lon0": lon0,
+                            "lat1": lat1, "lon1": lon1,
+                        })
+                self.roads = pd.DataFrame(rows)
+
         utm_zone = utm.from_latlon(
             latitude=self.nodes.latitude.mean(),
             longitude=self.nodes.longitude.mean(),
@@ -152,10 +175,16 @@ class GridOptimizer:
             "distribution_cable"
         ]["max_length"]
 
+
     def optimize(self):
         print("Optimizing distribution grid...")
         self.convert_lonlat_xy()
-        self._clear_poles()
+        if self.roads is not None:
+            self._build_road_graph()
+        # Unconditional: drop ALL poles from previous runs before placing fresh ones.
+        # _clear_poles() preserves road-sampled poles for mid-run probing; here we
+        # want a truly blank slate regardless of how_added.
+        self.nodes = self.nodes[self.nodes["node_type"] != "pole"]
         n_total_consumers = len(self.nodes)
         n_shs_consumers = len(self.nodes[self.nodes["is_connected"] == False])  # noqa: E712
         n_grid_consumers = n_total_consumers - n_shs_consumers
@@ -168,11 +197,37 @@ class GridOptimizer:
         else:
             power_house_consumers = None
         print("Determining number of poles...")
-        n_poles = self._find_opt_number_of_poles(n_grid_consumers)
-        self.determine_poles(
-            min_n_clusters=n_poles,
-            power_house_consumers=power_house_consumers,
-        )
+        if self.roads is not None:
+            self._place_poles_with_roads()
+        else:
+            n_poles = self._find_opt_number_of_poles(n_grid_consumers)
+            self._clear_poles()
+            self.kmeans_clustering(n_clusters=n_poles)
+
+        if self.power_house is not None:
+            cluster_label = self.nodes.loc["100000", "cluster_label"]
+            power_house_idx = self.nodes[
+                (self.nodes["node_type"] == "pole")
+                & (self.nodes["cluster_label"] == cluster_label)
+            ].index
+            power_house_consumers["cluster_label"] = cluster_label
+            power_house_consumers["consumer_type"] = np.nan
+            self.nodes = pd.concat([self.nodes, power_house_consumers])
+            self._placeholder_consumers_for_power_house(remove=True)
+            # Drop old power house index to avoid duplicates
+            self.nodes = self.nodes.drop(index=self.power_house.index)
+
+        self.create_minimum_spanning_tree()
+        self.connect_grid_consumers()
+
+        if self.power_house is not None:
+            self.nodes.loc[self.nodes.index == power_house_idx[0], "node_type"] = "power-house"
+            self.nodes.loc[self.nodes.index == power_house_idx[0], "how_added"] = "manual"
+
+        # Populate self.links with distribution links so find_index_longest_distribution_link
+        # can detect links that exceed max_length. A second call follows after intermediate
+        # poles have been inserted to rebuild distribution links with long links broken.
+        self.connect_grid_poles()
         # Find the connection links_df in the network with lengths greater than the
         # maximum allowed length for `connection` cables, specified by the user.
         long_links = self.find_index_longest_distribution_link()
@@ -268,6 +323,7 @@ class GridOptimizer:
 
     def _process_links(self):
         links_df = self.links.reset_index(names=["label"])
+        links_df = links_df[round(links_df["length"], 2) > 0]
         links_df = links_df.drop(
             labels=[
                 "x_from",
@@ -418,12 +474,6 @@ class GridOptimizer:
         if remove is False:
             self.convert_lonlat_xy()
 
-    def _clear_nodes(self):
-        """
-        Removes all nodes from the grid.
-        """
-        self.nodes = self.nodes.drop(list(self.nodes.index), axis=0)
-
     def _clear_poles(self):
         """
         Removes all poles from the grid.
@@ -465,70 +515,64 @@ class GridOptimizer:
         long_links,
     ):
         for long_link in long_links:
-            # Get start and end coordinates of the long link.
             x_from = self.links.x_from[long_link]
             x_to = self.links.x_to[long_link]
             y_from = self.links.y_from[long_link]
             y_to = self.links.y_to[long_link]
 
-            # Calculate the number of additional poles required.
-            n_required_poles = int(
-                np.ceil(
-                    self.links.length[long_link] / self.distribution_cable_max_length,
+            # p-x label numbering continues from the highest existing pole index.
+            index_last_pole = int(self._poles().index[-1].split("-")[1])
+
+            def _place_pole(label, x, y):
+                self._add_node(
+                    label=label, x=x, y=y,
+                    node_type="pole", consumer_type="n.a.", consumer_detail="n.a.",
+                    is_connected=True, how_added=long_link, type_fixed=True,
+                    cluster_label=1000,  # avoids inclusion in consumer clusters
+                    custom_specification="", shs_options=0,
                 )
-                - 1,
+
+            waypoints = (
+                self._road_path_between(x_from, y_from, x_to, y_to)
+                if self.roads is not None
+                else None
             )
 
-            # Get the index of the last pole in the grid. The new pole's index
-            # will start from this index.
-            last_pole = self._poles().index[-1]
-            # Split the pole's index using `-` as the separator, because poles
-            # are labeled in `p-x` format. x represents the index number, which
-            # must be an integer.
-            index_last_pole = int(last_pole.split("-")[1])
-
-            # Calculate the slope of the line, connecting the start and end
-            # points of the long link.
-            slope = (y_to - y_from) / (x_to - x_from)
-
-            # Calculate the final length of the smaller links after splitting
-            # the long links into smaller parts.
-            length_smaller_links = self.links.length[long_link] / (n_required_poles + 1)
-
-            # Add all poles between the start and end points of the long link.
-            for i in range(1, n_required_poles + 1):
-                x = x_from + np.sign(
-                    x_to - x_from,
-                ) * i * length_smaller_links * np.sqrt(1 / (1 + slope**2))
-                y = y_from + np.sign(y_to - y_from) * i * length_smaller_links * abs(
-                    slope,
-                ) * np.sqrt(1 / (1 + slope**2))
-
-                pole_label = f"p-{i + index_last_pole}"
-
-                # In adding the pole, the `how_added` attribute is considered
-                # `long-distance-init`, which means the pole is added because
-                # of long distance in a distribution link.
-                # The reason for using the `long_link` part is to distinguish
-                # it with the poles which are already `connected` to the grid.
-                # The poles in this stage are only placed on the line, and will
-                # be connected to the other poles using another function.
-                # The `cluster_label` is given as 1000, to avoid inclusion in
-                # other clusters.
-                self._add_node(
-                    label=pole_label,
-                    x=x,
-                    y=y,
-                    node_type="pole",
-                    consumer_type="n.a.",
-                    consumer_detail="n.a.",
-                    is_connected=True,
-                    how_added=long_link,
-                    type_fixed=True,
-                    cluster_label=1000,
-                    custom_specification="",
-                    shs_options=0,
+            # Road path connects nearest road-graph vertices, not the endpoints
+            # themselves. If those vertices are very close, the sampled path may
+            # return zero intermediate positions → fall back to straight line.
+            road_positions = []
+            if waypoints is not None:
+                raw_positions = self._sample_points_along_polyline(
+                    waypoints, self.distribution_cable_max_length
                 )
+                # 1 cm tolerance: drop positions that coincide with an endpoint
+                # when path length is a precise multiple of max_length.
+                road_positions = [
+                    (px, py) for px, py in raw_positions
+                    if math.sqrt((px - x_from) ** 2 + (py - y_from) ** 2) > 0.01
+                    and math.sqrt((px - x_to) ** 2 + (py - y_to) ** 2) > 0.01
+                ]
+
+            if road_positions:
+                for i, (px, py) in enumerate(road_positions):
+                    _place_pole(f"p-{i + 1 + index_last_pole}", px, py)
+            else:
+                # Straight-line fallback: evenly spaced poles between endpoints.
+                n_required_poles = int(
+                    np.ceil(self.links.length[long_link] / self.distribution_cable_max_length) - 1
+                )
+                slope = (y_to - y_from) / (x_to - x_from)
+                length_smaller_links = self.links.length[long_link] / (n_required_poles + 1)
+
+                for i in range(1, n_required_poles + 1):
+                    x = x_from + np.sign(x_to - x_from) * i * length_smaller_links * np.sqrt(
+                        1 / (1 + slope**2)
+                    )
+                    y = y_from + np.sign(y_to - y_from) * i * length_smaller_links * abs(
+                        slope
+                    ) * np.sqrt(1 / (1 + slope**2))
+                    _place_pole(f"p-{i + index_last_pole}", x, y)
 
     def _add_node(self, label, **kwargs):
         """
@@ -551,7 +595,7 @@ class GridOptimizer:
             "how_added": "automatic",
             "type_fixed": False,
             "cluster_label": 0,
-            "n_connection_links": "0",
+            "n_connection_links": 0,
             "n_distribution_links": 0,
             "parent": "unknown",
             "distribution_cost": 0,
@@ -604,7 +648,7 @@ class GridOptimizer:
         -------
             distance between the two nodes in meter
         """
-        if (label_node_1 and label_node_2) in self.nodes.index:
+        if label_node_1 in self.nodes.index and label_node_2 in self.nodes.index:
             # (x,y) coordinates of the points
             x1 = self.nodes.x.loc[label_node_1]
             y1 = self.nodes.y.loc[label_node_1]
@@ -775,6 +819,13 @@ class GridOptimizer:
                 )
                 self.nodes.loc[node_index, "x"] = x
                 self.nodes.loc[node_index, "y"] = y
+
+            if self.roads is not None:
+                x0, y0 = p(self.roads["lon0"].to_numpy(), self.roads["lat0"].to_numpy(),
+                           inverse=inverse)
+                x1, y1 = p(self.roads["lon1"].to_numpy(), self.roads["lat1"].to_numpy(),
+                           inverse=inverse)
+                self.roads[["x0", "y0", "x1", "y1"]] = np.column_stack([x0, y0, x1, y1])
 
             # store reference values for (x,y) to use later when converting (x,y) to (lon,lat)
 
@@ -1029,44 +1080,6 @@ class GridOptimizer:
                 + length * self.grid_design_dict["connection_cable"]["epc"]
             )
             self.nodes.loc[consumer, "connection_cost_per_consumer"] = connection_cost
-
-    def get_subbranches(self, branch):
-        subbranches = self.nodes[self.nodes["branch"] == branch].index.tolist()
-        leaf_branches = self.nodes[self.nodes["n_distribution_links"] == 1][
-            "branch"
-        ].index
-        next_sub_branches = self.nodes[self.nodes["parent_branch"] == branch][
-            "parent_branch"
-        ].tolist()
-        for _ in range(len(self.nodes["branch"].unique())):
-            next_next_sub_branches = []
-            for sub_branch in next_sub_branches:
-                if sub_branch in leaf_branches:
-                    break
-                for b in next_sub_branches:
-                    subbranches.append(b)
-                next_next_sub_branches.append(sub_branch)
-            next_sub_branches = next_next_sub_branches
-            if len(next_sub_branches) == 0:
-                break
-        return subbranches
-
-    def get_all_consumers_of_subbranches(self, branch):
-        branches = self.get_subbranches(branch)
-        consumers = self.nodes[
-            (self.nodes["node_type"] == "consumer")
-            & (self.nodes["branch"].isin(branches))
-            & (self.nodes["is_connected"] == True)  # noqa:E712
-        ].index
-        return consumers
-
-    def get_all_consumers_of_branch(self, branch):
-        consumers = self.nodes[
-            (self.nodes["node_type"] == "consumer")
-            & (self.nodes["branch"].isin(branch))
-            & (self.nodes["is_connected"] == True)  # noqa:E712
-        ].index
-        return consumers
 
     def _determine_distribution_links(self):
         pole_like_nodes = self.nodes[
@@ -1470,23 +1483,18 @@ class GridOptimizer:
         # Remove all existing connections between poles and consumers
         self._clear_links(link_type="connection")
 
-        # calculate the number of clusters and their labels obtained from kmeans clustering
-        n_clusters = len(self._poles()[self._poles()["type_fixed"] == False])  # noqa: E712
-        cluster_labels = self._poles()["cluster_label"]
+        #  iterate over non-fixed (k-means / road-sampled) poles
+        non_fixed_poles = self._poles()[self._poles()["type_fixed"] == False]  # noqa: E712
 
         # create links between each node and the corresponding centroid
-        for cluster in range(n_clusters):
-            if len(self.nodes[self.nodes["cluster_label"] == cluster]) == 1:
+        for _, pole_row in non_fixed_poles.iterrows():
+            label = pole_row["cluster_label"]
+            filtered_nodes = self.nodes[self.nodes["cluster_label"] == label]
+            if len(filtered_nodes) <= 1:
                 continue
-
-            # first filter the nodes and only select those with cluster labels equal to 'cluster'
-            filtered_nodes = self.nodes[
-                self.nodes["cluster_label"] == cluster_labels.iloc[cluster]
-            ]
 
             # then obtain the label of the pole which is in this cluster (as the center)
             pole_label = filtered_nodes.index[filtered_nodes["node_type"] == "pole"][0]
-
             filtered_nodes_idx = [str(node) for node in filtered_nodes.index]
 
             for node_label in filtered_nodes_idx:
@@ -1631,55 +1639,32 @@ class GridOptimizer:
         self.grid_mst = grid_mst
 
     #  --------------------- K-MEANS CLUSTERING ---------------------#
-    def kmeans_clustering(self, n_clusters: int):
+    def kmeans_clustering(self, n_clusters: int, consumer_indices: pd.Index = None):
         """
-        Uses a k-means clustering algorithm and returns the coordinates of the centroids.
-
-        Parameters
-        ----------
-            grid (~grids.Grid):
-                grid object
-            n_cluster (int):
-                number of clusters (i.e., k-value) for the k-means clustering algorithm
-
-        Return
-        ------
-            coord_centroids: numpy.ndarray
-                A numpy array containing the coordinates of the cluster centroids.
-                Suppose there are two cluster with centers at (x1, y1) & (x2, y2),
-                then the output array would look like:
-                    array([
-                        [x1, y1],
-                        [x2 , y2]
-                        ])
+        Run constrained k-means on a subset of consumers and append the resulting
+        poles to self.nodes. If consumer_indices is None, all connected consumers
+        are used. Callers are responsible for clearing stale poles beforehand.
         """
+        if consumer_indices is None:
+            consumer_indices = self.get_grid_consumers().index
 
-        # first, all poles must be removed from the nodes list
-        self._clear_poles()
-        grid_consumers = self.get_grid_consumers()
+        consumers = self.nodes.loc[consumer_indices]
+        nodes_coord = consumers[["x", "y"]].to_numpy()
 
-        # gets (x,y) coordinates of all nodes in the grid
-        nodes_coord = grid_consumers[grid_consumers["is_connected"]][
-            ["x", "y"]
-        ].to_numpy()
-
-        # call kmeans clustering with constraints (min and max number of members in each cluster )
         kmeans = KMeansConstrained(
             n_clusters=n_clusters,
-            init="k-means++",  # 'k-means++' or 'random'
+            init="k-means++",
             n_init=10,
             max_iter=300,
             tol=1e-4,
             size_min=0,
-            size_max=self.pole_max_connection,
+            size_max=self.pole_max_connection if self.pole_max_connection > 0 else len(consumers),
             random_state=0,
             n_jobs=5,
         )
-        # fit clusters to the data
         kmeans.fit(nodes_coord)
+        self.nodes.loc[consumer_indices, "cluster_label"] = kmeans.predict(nodes_coord)
 
-        # coordinates of the centroids of the clusters
-        grid_consumers["cluster_label"] = kmeans.predict(nodes_coord)
         poles = pd.DataFrame(kmeans.cluster_centers_, columns=["x", "y"])
         poles.index.name = "cluster_label"
         poles = poles.reset_index(drop=False)
@@ -1693,68 +1678,290 @@ class GridOptimizer:
         poles["longitude"] = 0
         poles["distance_to_load_center"] = 0
         poles["type_fixed"] = False
-        poles["n_connection_links"] = "0"
+        poles["n_connection_links"] = 0
         poles["n_distribution_links"] = 0
         poles["parent"] = "unknown"
         poles["distribution_cost"] = 0
-        self.nodes = pd.concat(
-            [grid_consumers, poles, self.get_shs_consumers()],
-            axis=0,
-        )
+        poles["custom_specification"] = ""
+        poles["shs_options"] = 0
+        self.nodes = pd.concat([self.nodes, poles])
         self.nodes.index = self.nodes.index.astype("str")
-
-        # compute (lon,lat) coordinates for the poles
         self.convert_lonlat_xy(inverse=True)
 
-    def determine_poles(self, min_n_clusters, power_house_consumers):
+    def _sample_road_poles(self) -> int:
         """
-        Computes the cost of grid based on the configuration obtained from
-        the k-means clustering algorithm for different numbers of poles, and
-        returns the number of poles corresponding to the lowest cost.
+        Sample candidate pole positions along road line geometries. Road coords are pre-projected to
+        (x, y) in self.road_geometries by convert_lonlat_xy. Returns count of
+        poles added.
 
-        Parameters
-        ----------
-        grid (~grids.Grid):
-            'grid' object which was defined before
-        min_n_clusters: int
-            the minimum number of clusters required for the grid to satisfy
-            the maximum number of pole connections criteria
-
-        Return
-        ------
-        number_of_poles: int
-            the number of poles corresponding to the minimum cost of the grid
+        Groups segments by parent_road_id (or road_id) to reconstruct full polylines, then
+        places poles at distribution_cable_max_length intervals along each polyline.
+        Deduplicates by coordinate so shared vertices between adjacent segments
+        never produce two poles at the same location.
         """
-        # obtain the location of poles using kmeans clustering method
-        self.kmeans_clustering(n_clusters=min_n_clusters)
-        # create the minimum spanning tree to obtain the optimal links between poles
-        if self.power_house is not None:
-            cluster_label = self.nodes.loc["100000", "cluster_label"]
-            power_house_idx = self.nodes[
-                (self.nodes["node_type"] == "pole")
-                & (self.nodes["cluster_label"] == cluster_label)
-            ].index
-            power_house_consumers["cluster_label"] = cluster_label
-            power_house_consumers["consumer_type"] = np.nan
-            self.nodes = pd.concat(
-                [self.nodes, power_house_consumers],
-            )
-            self._placeholder_consumers_for_power_house(remove=True)
+        seen = {}
+        road_poles = []
 
-        self.create_minimum_spanning_tree()
+        def _add_pole(x, y):
+            key = (round(x, 2), round(y, 2))
+            if key not in seen:
+                seen[key] = True
+                road_poles.append((x, y))
 
-        # connect all links in the grid based on the previous calculations
-        self.connect_grid_consumers()
-        self.connect_grid_poles()
-        if self.power_house is not None:
-            self.nodes.loc[self.nodes.index == power_house_idx[0], "node_type"] = (
-                "power-house"
-            )
-            self.nodes.loc[self.nodes.index == power_house_idx[0], "how_added"] = (
-                "manual"
-            )
+        group_col = "parent_road_id" if "parent_road_id" in self.roads.columns else "road_id"
+        for _, group in self.roads.groupby(group_col, sort=False):
+            group = group.sort_values("road_id")
+            waypoints = []
+            for _, seg in group.iterrows():
+                if not waypoints:
+                    waypoints.append((seg.x0, seg.y0))
+                waypoints.append((seg.x1, seg.y1))
+            _add_pole(*waypoints[0])
+            for x, y in self._sample_points_along_polyline(waypoints, self.distribution_cable_max_length):
+                _add_pole(x, y)
+            _add_pole(*waypoints[-1])
+
+        if not road_poles:
+            return 0
+
+        poles = pd.DataFrame(road_poles, columns=["x", "y"])
+        poles.index = "rp-" + poles.index.astype(str)
+        poles["node_type"] = "pole"
+        poles["consumer_type"] = "n.a."
+        poles["consumer_detail"] = "n.a."
+        poles["how_added"] = "road-sampled"
+        poles["type_fixed"] = False
+        poles["is_connected"] = True
+        poles["n_connection_links"] = 0
+        poles["n_distribution_links"] = 0
+        poles["parent"] = "unknown"
+        poles["custom_specification"] = ""
+        poles["shs_options"] = 0
+        # High-offset cluster labels avoid collision with k-means labels (0..n)
+        poles["cluster_label"] = range(100000, 100000 + len(poles))
+
+        self.nodes = pd.concat(
+            [self.nodes, poles],
+            axis=0,
+        )
+
+        return len(poles)
+
+    def _associate_consumers_to_road_poles(self) -> pd.Index:
+        """
+        Greedily assign each grid consumer to its nearest road-sampled pole within
+        connection_cable_max_length. Sets cluster_label on matched consumers.
+        Drops road poles that attract no consumers. Returns index of unassigned consumers.
+        """
+        consumers = self.get_grid_consumers()
+        road_pole_idxs = [idx for idx in self.nodes.index if str(idx).startswith("rp-")]
+
+        if not road_pole_idxs:
+            return consumers.index
+
+        pole_counts = {idx: 0 for idx in road_pole_idxs}
+        assigned = {}
+
+        for c_idx in consumers.index:
+            cx = self.nodes.at[c_idx, "x"]
+            cy = self.nodes.at[c_idx, "y"]
+            best_pole = None
+            best_dist = math.inf
+
+            for p_idx in road_pole_idxs:
+                if pole_counts[p_idx] >= self.pole_max_connection:
+                    continue
+                px = self.nodes.at[p_idx, "x"]
+                py = self.nodes.at[p_idx, "y"]
+                dist = math.sqrt((cx - px) ** 2 + (cy - py) ** 2)
+                if dist <= self.connection_cable_max_length and dist < best_dist:
+                    best_pole = p_idx
+                    best_dist = dist
+
+            if best_pole is not None:
+                self.nodes.at[c_idx, "cluster_label"] = self.nodes.at[best_pole, "cluster_label"]
+                pole_counts[best_pole] += 1
+                assigned[c_idx] = best_pole
+
+        empty_poles = [p for p in road_pole_idxs if pole_counts[p] == 0]
+        self.nodes = self.nodes.drop(index=empty_poles)
+
+        return consumers.index.difference(pd.Index(list(assigned.keys())))
+
+    def _build_road_graph(self):
+        """Build a weighted graph from road segments for shortest-path routing.
+
+        Vertices are deduplicated road segment endpoints (rounded to 1 cm).
+        Stored as self._road_graph (scipy CSR) and self._road_vertices (N×2 array).
+        Called once per optimize() after convert_lonlat_xy() projects road coords.
+        """
+        coord_to_idx = {}
+        vertices_xy = []
+
+        def _vertex(x, y):
+            key = (round(x, 2), round(y, 2))
+            if key not in coord_to_idx:
+                coord_to_idx[key] = len(vertices_xy)
+                vertices_xy.append(key)
+            return coord_to_idx[key]
+
+        edges = []
+        for _, row in self.roads.iterrows():
+            a = _vertex(row.x0, row.y0)
+            b = _vertex(row.x1, row.y1)
+            if a != b:
+                length = math.sqrt((row.x1 - row.x0) ** 2 + (row.y1 - row.y0) ** 2)
+                edges.append((a, b, length))
+
+        n = len(vertices_xy)
+        graph = lil_matrix((n, n))
+        for a, b, length in edges:
+            graph[a, b] = length
+            graph[b, a] = length
+        self._road_graph = graph.tocsr()
+        self._road_vertices = np.array(vertices_xy)
+
+    def _road_path_between(self, x_a, y_a, x_b, y_b):
+        """Return ordered (x, y) waypoints along the shortest road path from
+        (x_a, y_a) to (x_b, y_b), or None if no road path is reachable.
+
+        Falls back to None when either endpoint is further than
+        2 × distribution_cable_max_length from any road vertex, or when the
+        road graph is disconnected between the two nearest vertices.
+        """
+        threshold = 2.0 * self.distribution_cable_max_length
+        verts = self._road_vertices
+
+        dists_a = np.sqrt((verts[:, 0] - x_a) ** 2 + (verts[:, 1] - y_a) ** 2)
+        idx_a = int(np.argmin(dists_a))
+        if dists_a[idx_a] > threshold:
+            return None
+
+        dists_b = np.sqrt((verts[:, 0] - x_b) ** 2 + (verts[:, 1] - y_b) ** 2)
+        idx_b = int(np.argmin(dists_b))
+        if dists_b[idx_b] > threshold:
+            return None
+
+        if idx_a == idx_b:
+            return None
+
+        dist_matrix, predecessors = shortest_path(
+            self._road_graph, method="D", indices=idx_a, return_predecessors=True
+        )
+
+        if np.isinf(dist_matrix[idx_b]):
+            return None
+
+        path_indices = []
+        node = idx_b
+        while node != idx_a:
+            path_indices.append(node)
+            pred = predecessors[node]
+            if pred < 0:
+                return None
+            node = pred
+        path_indices.append(idx_a)
+        path_indices.reverse()
+
+        return [(float(verts[i, 0]), float(verts[i, 1])) for i in path_indices]
+
+    @staticmethod
+    def _sample_points_along_polyline(waypoints, interval):
+        """Return (x, y) positions placed every `interval` metres along a polyline.
+
+        The first and last waypoints (the link endpoints) are excluded — only
+        interior intermediate points are returned, matching the behaviour of the
+        straight-line fallback in _add_fixed_poles_on_long_links.
+        """
+        positions = []
+        accumulated = 0.0
+        wx0, wy0 = waypoints[0]
+
+        for wx1, wy1 in waypoints[1:]:
+            seg_len = math.sqrt((wx1 - wx0) ** 2 + (wy1 - wy0) ** 2)
+            if seg_len == 0:
+                wx0, wy0 = wx1, wy1
+                continue
+            remaining_in_seg = seg_len
+            ox, oy = wx0, wy0
+            while accumulated + remaining_in_seg >= interval:
+                advance = interval - accumulated
+                t = advance / remaining_in_seg
+                px = ox + t * (wx1 - ox)
+                py = oy + t * (wy1 - oy)
+                positions.append((px, py))
+                remaining_in_seg -= advance
+                ox, oy = px, py
+                accumulated = 0.0
+            accumulated += remaining_in_seg
+            wx0, wy0 = wx1, wy1
+
+        return positions
+
+    def _find_opt_kmeans_for_unassigned(self, consumer_indices: pd.Index) -> int:
+        """Binary-search the minimum number of k-means clusters for `consumer_indices`
+        such that every resulting connection cable is within connection_cable_max_length.
+
+        Unlike _find_opt_number_of_poles / is_enough_poles, this does NOT call
+        _clear_poles() — road poles (rp-*) must survive untouched.  Instead it
+        records which p-* poles exist before each probe, adds k-means poles, checks
+        the constraint, then removes only those newly-added poles before trying the
+        next n.
+        """
+        n_min = (
+            max(1, math.ceil(len(consumer_indices) / self.pole_max_connection))
+            if self.pole_max_connection > 0
+            else 1
+        )
+        if n_min >= len(consumer_indices):
+            return n_min
+
+        def _probe(n: int) -> bool:
+            poles_before = set(self._poles().index)
+            self.kmeans_clustering(n_clusters=n, consumer_indices=consumer_indices)
+            self.connect_grid_consumers()
+            conn = self.links[self.links["link_type"] == "connection"]
+            violation = conn[
+                conn["to_node"].isin(consumer_indices)
+                | conn["from_node"].isin(consumer_indices)
+            ]
+            ok = (violation["length"] <= self.connection_cable_max_length).all()
+            # Roll back: drop poles added by this probe and their connection links.
+            added = [p for p in self._poles().index if p not in poles_before]
+            self.nodes = self.nodes.drop(index=added)
+            self._clear_links("connection")
+            return ok
+
+        space = list(range(n_min, len(consumer_indices) + 1))
+        while len(space) >= 5:
+            mid = space[len(space) // 2]
+            if _probe(mid):
+                space = [x for x in space if x <= mid]
+            else:
+                space = [x for x in space if x > mid]
+        for n in space:
+            if n == space[-1] or _probe(n):
+                return n
+        return n_min
+
+    def _place_poles_with_roads(self):
+        """
+        Road-aware pole placement: sample poles along road geometries, associate
+        consumers within connection_cable_max_length, then run k-means only on
+        consumers that road poles could not reach.
+        """
+        n_road_poles = self._sample_road_poles()
+        if n_road_poles > 0:
+            unassigned = self._associate_consumers_to_road_poles()
+        else:
+            unassigned = self.get_grid_consumers().index
+
+        if len(unassigned) > 0:
+            n_kmeans = self._find_opt_kmeans_for_unassigned(unassigned)
+            self.kmeans_clustering(n_clusters=n_kmeans, consumer_indices=unassigned)
 
     def is_enough_poles(self, n):
+        self._clear_poles()
         self.kmeans_clustering(n_clusters=n)
         self.connect_grid_consumers()
         constraints_violation = self.links[self.links["link_type"] == "connection"]
@@ -1787,3 +1994,58 @@ class GridOptimizer:
                 for next_n in space:
                     if next_n == space.iloc[-1] or self.is_enough_poles(next_n) is True:
                         return next_n
+
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    import matplotlib.lines as mlines
+
+
+    def plot_grid(opt):
+        fig, ax = plt.subplots(figsize=(12, 10))
+
+        # Roads
+        # if opt.roads is not None:
+        #     for _, r in opt.roads.iterrows():
+        #         ax.plot([r.lon0, r.lon1], [r.lat0, r.lat1], color="#cccccc", lw=1.5,
+        #                 zorder=1)
+
+        # Links
+        for _, lk in opt.links.iterrows():
+            color = "#2196F3" if lk.link_type == "distribution" else "#FF9800"
+            ax.plot([lk.lon_from, lk.lon_to], [lk.lat_from, lk.lat_to],
+                    color=color, lw=1, zorder=2)
+
+        # Nodes
+        style = {
+            "consumer": dict(marker=".", s=20, color="#4CAF50", zorder=4),
+            "pole": dict(marker="s", s=40, color="#E53935", zorder=5),
+            "power-house": dict(marker="*", s=200, color="#FFD600", zorder=6),
+        }
+        for ntype, kw in style.items():
+            sub = opt.nodes[opt.nodes.node_type == ntype]
+            if not sub.empty:
+                ax.scatter(sub.longitude, sub.latitude, label=ntype, **kw)
+
+        # Legend
+        handles = [
+            mlines.Line2D([], [], color="#cccccc", lw=1.5, label="road"),
+            mlines.Line2D([], [], color="#2196F3", lw=1, label="distribution link"),
+            mlines.Line2D([], [], color="#FF9800", lw=1, label="connection link"),
+            *ax.get_legend_handles_labels()[0],
+        ]
+        ax.legend(handles=handles, fontsize=8)
+        ax.set_xlabel("longitude");
+        ax.set_ylabel("latitude")
+        ax.set_title("Grid optimization result")
+        plt.tight_layout()
+        plt.show()
+
+
+    with open('grid_opt_with_roads.json') as json_data:
+        d = json.load(json_data)
+        grid_opt = GridOptimizer(d)
+        res = grid_opt.optimize()
+        plot_grid(grid_opt)
+
