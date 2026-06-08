@@ -113,22 +113,23 @@ class GridOptimizer:
         self.roads = None
         if "roads" in self.grid_opt_json:
             roads = pd.DataFrame(self.grid_opt_json["roads"])
-            # Split polyline roads into single segments
-            rows = []
-            for _, road in roads.iterrows():
-                coords = road["coordinates"]
-                for i in range(len(coords) - 1):
-                    lat0, lon0 = coords[i]
-                    lat1, lon1 = coords[i + 1]
-                    rows.append({
-                        "road_id": f"{road["road_id"]}-{i}",
-                        "parent_road_id": road["road_id"],
-                        "road_type": road["road_type"],
-                        "how_added": road["how_added"],
-                        "lat0": lat0, "lon0": lon0,
-                        "lat1": lat1, "lon1": lon1,
-                    })
-            self.roads = pd.DataFrame(rows)
+            if not roads.empty:
+                # Split polyline roads into single segments
+                rows = []
+                for _, road in roads.iterrows():
+                    coords = road["coordinates"]
+                    for i in range(len(coords) - 1):
+                        lat0, lon0 = coords[i]
+                        lat1, lon1 = coords[i + 1]
+                        rows.append({
+                            "road_id": f"{road["road_id"]}-{i}",
+                            "parent_road_id": road["road_id"],
+                            "road_type": road["road_type"],
+                            "how_added": road["how_added"],
+                            "lat0": lat0, "lon0": lon0,
+                            "lat1": lat1, "lon1": lon1,
+                        })
+                self.roads = pd.DataFrame(rows)
 
         utm_zone = utm.from_latlon(
             latitude=self.nodes.latitude.mean(),
@@ -196,7 +197,7 @@ class GridOptimizer:
         else:
             power_house_consumers = None
         print("Determining number of poles...")
-        if "roads" in self.grid_opt_json:
+        if self.roads is not None:
             self._place_poles_with_roads()
         else:
             n_poles = self._find_opt_number_of_poles(n_grid_consumers)
