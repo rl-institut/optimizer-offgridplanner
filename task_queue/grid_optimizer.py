@@ -648,7 +648,7 @@ class GridOptimizer:
         -------
             distance between the two nodes in meter
         """
-        if (label_node_1 and label_node_2) in self.nodes.index:
+        if label_node_1 in self.nodes.index and label_node_2 in self.nodes.index:
             # (x,y) coordinates of the points
             x1 = self.nodes.x.loc[label_node_1]
             y1 = self.nodes.y.loc[label_node_1]
