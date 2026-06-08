@@ -474,12 +474,6 @@ class GridOptimizer:
         if remove is False:
             self.convert_lonlat_xy()
 
-    def _clear_nodes(self):
-        """
-        Removes all nodes from the grid.
-        """
-        self.nodes = self.nodes.drop(list(self.nodes.index), axis=0)
-
     def _clear_poles(self):
         """
         Removes all poles from the grid.
@@ -1086,44 +1080,6 @@ class GridOptimizer:
                 + length * self.grid_design_dict["connection_cable"]["epc"]
             )
             self.nodes.loc[consumer, "connection_cost_per_consumer"] = connection_cost
-
-    def get_subbranches(self, branch):
-        subbranches = self.nodes[self.nodes["branch"] == branch].index.tolist()
-        leaf_branches = self.nodes[self.nodes["n_distribution_links"] == 1][
-            "branch"
-        ].index
-        next_sub_branches = self.nodes[self.nodes["parent_branch"] == branch][
-            "parent_branch"
-        ].tolist()
-        for _ in range(len(self.nodes["branch"].unique())):
-            next_next_sub_branches = []
-            for sub_branch in next_sub_branches:
-                if sub_branch in leaf_branches:
-                    break
-                for b in next_sub_branches:
-                    subbranches.append(b)
-                next_next_sub_branches.append(sub_branch)
-            next_sub_branches = next_next_sub_branches
-            if len(next_sub_branches) == 0:
-                break
-        return subbranches
-
-    def get_all_consumers_of_subbranches(self, branch):
-        branches = self.get_subbranches(branch)
-        consumers = self.nodes[
-            (self.nodes["node_type"] == "consumer")
-            & (self.nodes["branch"].isin(branches))
-            & (self.nodes["is_connected"] == True)  # noqa:E712
-        ].index
-        return consumers
-
-    def get_all_consumers_of_branch(self, branch):
-        consumers = self.nodes[
-            (self.nodes["node_type"] == "consumer")
-            & (self.nodes["branch"].isin(branch))
-            & (self.nodes["is_connected"] == True)  # noqa:E712
-        ].index
-        return consumers
 
     def _determine_distribution_links(self):
         pole_like_nodes = self.nodes[
