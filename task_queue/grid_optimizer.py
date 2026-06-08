@@ -179,7 +179,10 @@ class GridOptimizer:
         self.convert_lonlat_xy()
         if self.roads is not None:
             self._build_road_graph()
-        self._clear_poles()
+        # Unconditional: drop ALL poles from previous runs before placing fresh ones.
+        # _clear_poles() preserves road-sampled poles for mid-run probing; here we
+        # want a truly blank slate regardless of how_added.
+        self.nodes = self.nodes[self.nodes["node_type"] != "pole"]
         n_total_consumers = len(self.nodes)
         n_shs_consumers = len(self.nodes[self.nodes["is_connected"] == False])  # noqa: E712
         n_grid_consumers = n_total_consumers - n_shs_consumers
@@ -318,6 +321,7 @@ class GridOptimizer:
 
     def _process_links(self):
         links_df = self.links.reset_index(names=["label"])
+        links_df = links_df[round(links_df["length"], 2) > 0]
         links_df = links_df.drop(
             labels=[
                 "x_from",
@@ -1776,20 +1780,33 @@ class GridOptimizer:
         Sample candidate pole positions along road line geometries. Road coords are pre-projected to
         (x, y) in self.road_geometries by convert_lonlat_xy. Returns count of
         poles added.
+
+        Groups segments by parent_road_id (or road_id) to reconstruct full polylines, then
+        places poles at distribution_cable_max_length intervals along each polyline.
+        Deduplicates by coordinate so shared vertices between adjacent segments
+        never produce two poles at the same location.
         """
+        seen = {}
         road_poles = []
 
-        for _, road in self.roads.iterrows():
-            seg_len = math.sqrt((road.x1 - road.x0) ** 2 + (road.y1 - road.y0) ** 2)
-            # append start and end points as pole positions
-            road_poles.append((road.x0, road.y0))
-            road_poles.append((road.x1, road.y1))
-            # if segment is longer than max length, also add evenly distributed poles inside the segment
-            if seg_len > self.distribution_cable_max_length:
-                n_interior_poles = int(seg_len // self.distribution_cable_max_length)
-                for k in range(1, n_interior_poles + 1):
-                    t = k / (n_interior_poles + 1)
-                    road_poles.append((road.x0 + t * (road.x1 - road.x0), road.y0 + t * (road.y1 - road.y0)))
+        def _add_pole(x, y):
+            key = (round(x, 2), round(y, 2))
+            if key not in seen:
+                seen[key] = True
+                road_poles.append((x, y))
+
+        group_col = "parent_road_id" if "parent_road_id" in self.roads.columns else "road_id"
+        for _, group in self.roads.groupby(group_col, sort=False):
+            group = group.sort_values("road_id")
+            waypoints = []
+            for _, seg in group.iterrows():
+                if not waypoints:
+                    waypoints.append((seg.x0, seg.y0))
+                waypoints.append((seg.x1, seg.y1))
+            _add_pole(*waypoints[0])
+            for x, y in self._sample_points_along_polyline(waypoints, self.distribution_cable_max_length):
+                _add_pole(x, y)
+            _add_pole(*waypoints[-1])
 
         if not road_poles:
             return 0
@@ -1831,6 +1848,7 @@ class GridOptimizer:
             cx = self.nodes.at[c_idx, "x"]
             cy = self.nodes.at[c_idx, "y"]
             best_pole = None
+            best_dist = math.inf
 
             for p_idx in road_pole_idxs:
                 if pole_counts[p_idx] >= self.pole_max_connection:
@@ -1838,8 +1856,9 @@ class GridOptimizer:
                 px = self.nodes.at[p_idx, "x"]
                 py = self.nodes.at[p_idx, "y"]
                 dist = math.sqrt((cx - px) ** 2 + (cy - py) ** 2)
-                if dist <= self.connection_cable_max_length:
+                if dist <= self.connection_cable_max_length and dist < best_dist:
                     best_pole = p_idx
+                    best_dist = dist
 
             if best_pole is not None:
                 self.nodes.at[c_idx, "cluster_label"] = self.nodes.at[best_pole, "cluster_label"]

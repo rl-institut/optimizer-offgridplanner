@@ -379,9 +379,12 @@ def test_process_links_formats_coordinates_and_drops_internal_columns(
     optimizer: GridOptimizer,
 ) -> None:
     optimizer._add_node(
-        "p-0", node_type="pole", latitude=1.23456789, longitude=2.34567891
+        "p-0", node_type="pole", latitude=1.23456789, longitude=2.34567891,
+        x=0.0, y=5.0,
     )
-    optimizer.nodes.loc["0", ["latitude", "longitude"]] = [3.45678912, 4.56789123]
+    optimizer.nodes.loc["0", ["latitude", "longitude", "x", "y"]] = [
+        3.45678912, 4.56789123, 0.0, 0.0,
+    ]
     optimizer._add_links("p-0", "0")
 
     result = optimizer._process_links()
