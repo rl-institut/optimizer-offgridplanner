@@ -87,7 +87,8 @@ import numpy as np
 import pandas as pd
 from k_means_constrained import KMeansConstrained
 from pyproj import Proj
-from scipy.sparse.csgraph import minimum_spanning_tree
+from scipy.sparse import lil_matrix
+from scipy.sparse.csgraph import minimum_spanning_tree, shortest_path
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,8 @@ class GridOptimizer:
     def optimize(self):
         print("Optimizing distribution grid...")
         self.convert_lonlat_xy()
+        if self.roads is not None:
+            self._build_road_graph()
         self._clear_poles()
         n_total_consumers = len(self.nodes)
         n_shs_consumers = len(self.nodes[self.nodes["is_connected"] == False])  # noqa: E712
@@ -513,19 +516,11 @@ class GridOptimizer:
         long_links,
     ):
         for long_link in long_links:
-            # Get start and end coordinates of the long link.
             x_from = self.links.x_from[long_link]
             x_to = self.links.x_to[long_link]
             y_from = self.links.y_from[long_link]
             y_to = self.links.y_to[long_link]
 
-            # Calculate the number of additional poles required.
-            n_required_poles = int(
-                np.ceil(
-                    self.links.length[long_link] / self.distribution_cable_max_length,
-                )
-                - 1,
-            )
 
             # Get the index of the last pole in the grid. The new pole's index
             # will start from this index.
@@ -535,48 +530,89 @@ class GridOptimizer:
             # must be an integer.
             index_last_pole = int(last_pole.split("-")[1])
 
-            # Calculate the slope of the line, connecting the start and end
-            # points of the long link.
-            slope = (y_to - y_from) / (x_to - x_from)
 
-            # Calculate the final length of the smaller links after splitting
-            # the long links into smaller parts.
-            length_smaller_links = self.links.length[long_link] / (n_required_poles + 1)
+            waypoints = (
+                self._road_path_between(x_from, y_from, x_to, y_to)
+                if self.roads is not None
+                else None
+            )
 
-            # Add all poles between the start and end points of the long link.
-            for i in range(1, n_required_poles + 1):
-                x = x_from + np.sign(
-                    x_to - x_from,
-                ) * i * length_smaller_links * np.sqrt(1 / (1 + slope**2))
-                y = y_from + np.sign(y_to - y_from) * i * length_smaller_links * abs(
-                    slope,
-                ) * np.sqrt(1 / (1 + slope**2))
-
-                pole_label = f"p-{i + index_last_pole}"
-
-                # In adding the pole, the `how_added` attribute is considered
-                # `long-distance-init`, which means the pole is added because
-                # of long distance in a distribution link.
-                # The reason for using the `long_link` part is to distinguish
-                # it with the poles which are already `connected` to the grid.
-                # The poles in this stage are only placed on the line, and will
-                # be connected to the other poles using another function.
-                # The `cluster_label` is given as 1000, to avoid inclusion in
-                # other clusters.
-                self._add_node(
-                    label=pole_label,
-                    x=x,
-                    y=y,
-                    node_type="pole",
-                    consumer_type="n.a.",
-                    consumer_detail="n.a.",
-                    is_connected=True,
-                    how_added=long_link,
-                    type_fixed=True,
-                    cluster_label=1000,
-                    custom_specification="",
-                    shs_options=0,
+            if waypoints is not None:
+                raw_positions = self._sample_points_along_polyline(
+                    waypoints, self.distribution_cable_max_length
                 )
+                # Exclude any position that coincides with a link endpoint
+                # (can happen when path length is an exact multiple of max_length).
+                pole_positions = [
+                    (px, py) for px, py in raw_positions
+                    if math.sqrt((px - x_from) ** 2 + (py - y_from) ** 2) > 1.0
+                    and math.sqrt((px - x_to) ** 2 + (py - y_to) ** 2) > 1.0
+                ]
+                for i, (px, py) in enumerate(pole_positions):
+                    self._add_node(
+                        label=f"p-{i + 1 + index_last_pole}",
+                        x=px,
+                        y=py,
+                        node_type="pole",
+                        consumer_type="n.a.",
+                        consumer_detail="n.a.",
+                        is_connected=True,
+                        how_added=long_link,
+                        type_fixed=True,
+                        cluster_label=1000,
+                        custom_specification="",
+                        shs_options=0,
+                    )
+            else:
+                # Straight-line fallback: evenly spaced poles between endpoints.
+                n_required_poles = int(
+                    np.ceil(
+                        self.links.length[long_link] / self.distribution_cable_max_length,
+                    )
+                    - 1,
+                )
+                # Calculate the slope of the line, connecting the start and end
+                # points of the long link.
+                slope = (y_to - y_from) / (x_to - x_from)
+
+                # Calculate the final length of the smaller links after splitting
+                # the long links into smaller parts.
+                length_smaller_links = self.links.length[long_link] / (n_required_poles + 1)
+
+                # Add all poles between the start and end points of the long link.
+                for i in range(1, n_required_poles + 1):
+                    x = x_from + np.sign(
+                        x_to - x_from,
+                    ) * i * length_smaller_links * np.sqrt(1 / (1 + slope**2))
+                    y = y_from + np.sign(y_to - y_from) * i * length_smaller_links * abs(
+                        slope,
+                    ) * np.sqrt(1 / (1 + slope**2))
+
+                    pole_label = f"p-{i + index_last_pole}"
+
+                    # In adding the pole, the `how_added` attribute is considered
+                    # `long-distance-init`, which means the pole is added because
+                    # of long distance in a distribution link.
+                    # The reason for using the `long_link` part is to distinguish
+                    # it with the poles which are already `connected` to the grid.
+                    # The poles in this stage are only placed on the line, and will
+                    # be connected to the other poles using another function.
+                    # The `cluster_label` is given as 1000, to avoid inclusion in
+                    # other clusters.
+                    self._add_node(
+                    label=pole_label,
+                        x=x,
+                        y=y,
+                        node_type="pole",
+                        consumer_type="n.a.",
+                        consumer_detail="n.a.",
+                        is_connected=True,
+                        how_added=long_link,
+                        type_fixed=True,
+                        cluster_label=1000,
+                        custom_specification="",
+                        shs_options=0,
+                    )
 
     def _add_node(self, label, **kwargs):
         """
@@ -1807,6 +1843,116 @@ class GridOptimizer:
         self.nodes = self.nodes.drop(index=empty_poles)
 
         return consumers.index.difference(pd.Index(list(assigned.keys())))
+
+    def _build_road_graph(self):
+        """Build a weighted graph from road segments for shortest-path routing.
+
+        Vertices are deduplicated road segment endpoints (rounded to 1 cm).
+        Stored as self._road_graph (scipy CSR) and self._road_vertices (N×2 array).
+        Called once per optimize() after convert_lonlat_xy() projects road coords.
+        """
+        coord_to_idx = {}
+        vertices_xy = []
+
+        def _vertex(x, y):
+            key = (round(x, 2), round(y, 2))
+            if key not in coord_to_idx:
+                coord_to_idx[key] = len(vertices_xy)
+                vertices_xy.append(key)
+            return coord_to_idx[key]
+
+        edges = []
+        for _, row in self.roads.iterrows():
+            a = _vertex(row.x0, row.y0)
+            b = _vertex(row.x1, row.y1)
+            if a != b:
+                length = math.sqrt((row.x1 - row.x0) ** 2 + (row.y1 - row.y0) ** 2)
+                edges.append((a, b, length))
+
+        n = len(vertices_xy)
+        graph = lil_matrix((n, n))
+        for a, b, length in edges:
+            graph[a, b] = length
+            graph[b, a] = length
+        self._road_graph = graph.tocsr()
+        self._road_vertices = np.array(vertices_xy)
+
+    def _road_path_between(self, x_a, y_a, x_b, y_b):
+        """Return ordered (x, y) waypoints along the shortest road path from
+        (x_a, y_a) to (x_b, y_b), or None if no road path is reachable.
+
+        Falls back to None when either endpoint is further than
+        2 × distribution_cable_max_length from any road vertex, or when the
+        road graph is disconnected between the two nearest vertices.
+        """
+        threshold = 2.0 * self.distribution_cable_max_length
+        verts = self._road_vertices
+
+        dists_a = np.sqrt((verts[:, 0] - x_a) ** 2 + (verts[:, 1] - y_a) ** 2)
+        idx_a = int(np.argmin(dists_a))
+        if dists_a[idx_a] > threshold:
+            return None
+
+        dists_b = np.sqrt((verts[:, 0] - x_b) ** 2 + (verts[:, 1] - y_b) ** 2)
+        idx_b = int(np.argmin(dists_b))
+        if dists_b[idx_b] > threshold:
+            return None
+
+        if idx_a == idx_b:
+            return None
+
+        dist_matrix, predecessors = shortest_path(
+            self._road_graph, method="D", indices=idx_a, return_predecessors=True
+        )
+
+        if np.isinf(dist_matrix[idx_b]):
+            return None
+
+        path_indices = []
+        node = idx_b
+        while node != idx_a:
+            path_indices.append(node)
+            pred = predecessors[node]
+            if pred < 0:
+                return None
+            node = pred
+        path_indices.append(idx_a)
+        path_indices.reverse()
+
+        return [(float(verts[i, 0]), float(verts[i, 1])) for i in path_indices]
+
+    @staticmethod
+    def _sample_points_along_polyline(waypoints, interval):
+        """Return (x, y) positions placed every `interval` metres along a polyline.
+
+        The first and last waypoints (the link endpoints) are excluded — only
+        interior intermediate points are returned, matching the behaviour of the
+        straight-line fallback in _add_fixed_poles_on_long_links.
+        """
+        positions = []
+        accumulated = 0.0
+        wx0, wy0 = waypoints[0]
+
+        for wx1, wy1 in waypoints[1:]:
+            seg_len = math.sqrt((wx1 - wx0) ** 2 + (wy1 - wy0) ** 2)
+            if seg_len == 0:
+                wx0, wy0 = wx1, wy1
+                continue
+            remaining_in_seg = seg_len
+            ox, oy = wx0, wy0
+            while accumulated + remaining_in_seg >= interval:
+                advance = interval - accumulated
+                t = advance / remaining_in_seg
+                px = ox + t * (wx1 - ox)
+                py = oy + t * (wy1 - oy)
+                positions.append((px, py))
+                remaining_in_seg -= advance
+                ox, oy = px, py
+                accumulated = 0.0
+            accumulated += remaining_in_seg
+            wx0, wy0 = wx1, wy1
+
+        return positions
 
     def _place_poles_with_roads(self):
         """
