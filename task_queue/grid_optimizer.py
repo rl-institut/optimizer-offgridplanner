@@ -537,18 +537,25 @@ class GridOptimizer:
                 else None
             )
 
+            # Road path connects nearest road-graph vertices to each endpoint,
+            # not the endpoints themselves. If those vertices are close the road
+            # path can be shorter than max_length → zero intermediate positions.
+            # Fall back to straight-line in that case.
+            road_positions = []
             if waypoints is not None:
                 raw_positions = self._sample_points_along_polyline(
                     waypoints, self.distribution_cable_max_length
                 )
-                # Exclude any position that coincides with a link endpoint
-                # (can happen when path length is an exact multiple of max_length).
-                pole_positions = [
+                # 1 cm tolerance: exclude positions that land exactly on an
+                # endpoint when path length is a precise multiple of max_length.
+                road_positions = [
                     (px, py) for px, py in raw_positions
-                    if math.sqrt((px - x_from) ** 2 + (py - y_from) ** 2) > 1.0
-                    and math.sqrt((px - x_to) ** 2 + (py - y_to) ** 2) > 1.0
+                    if math.sqrt((px - x_from) ** 2 + (py - y_from) ** 2) > 0.01
+                    and math.sqrt((px - x_to) ** 2 + (py - y_to) ** 2) > 0.01
                 ]
-                for i, (px, py) in enumerate(pole_positions):
+
+            if road_positions:
+                for i, (px, py) in enumerate(road_positions):
                     self._add_node(
                         label=f"p-{i + 1 + index_last_pole}",
                         x=px,
