@@ -595,7 +595,7 @@ class GridOptimizer:
             "how_added": "automatic",
             "type_fixed": False,
             "cluster_label": 0,
-            "n_connection_links": "0",
+            "n_connection_links": 0,
             "n_distribution_links": 0,
             "parent": "unknown",
             "distribution_cost": 0,
@@ -1678,10 +1678,12 @@ class GridOptimizer:
         poles["longitude"] = 0
         poles["distance_to_load_center"] = 0
         poles["type_fixed"] = False
-        poles["n_connection_links"] = "0"
+        poles["n_connection_links"] = 0
         poles["n_distribution_links"] = 0
         poles["parent"] = "unknown"
         poles["distribution_cost"] = 0
+        poles["custom_specification"] = ""
+        poles["shs_options"] = 0
         self.nodes = pd.concat([self.nodes, poles])
         self.nodes.index = self.nodes.index.astype("str")
         self.convert_lonlat_xy(inverse=True)
@@ -1730,6 +1732,11 @@ class GridOptimizer:
         poles["how_added"] = "road-sampled"
         poles["type_fixed"] = False
         poles["is_connected"] = True
+        poles["n_connection_links"] = 0
+        poles["n_distribution_links"] = 0
+        poles["parent"] = "unknown"
+        poles["custom_specification"] = ""
+        poles["shs_options"] = 0
         # High-offset cluster labels avoid collision with k-means labels (0..n)
         poles["cluster_label"] = range(100000, 100000 + len(poles))
 
