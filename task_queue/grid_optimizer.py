@@ -103,6 +103,11 @@ def optimize_grid(grid_opt_json):
 
 
 class GridOptimizer:
+    _ROAD_POLE_CLUSTER_OFFSET = 100_000  # road-pole cluster labels; k-means uses 0..n
+    _ENDPOINT_SNAP_TOL_M = 1             # drop road-path poles this close to an endpoint
+    _COST_EPS = 1e-9                     # division guard in cost calculations
+    _MAX_SHS_ITER = 100                  # iteration cap for _cut_leaf_poles_on_condition
+
     def __init__(self, grid_opt_json):
         print("Initiating grid optimizer...")
         # TODO go through the helper functions and figure out what they do / document
@@ -547,8 +552,8 @@ class GridOptimizer:
                 # Drop positions that coincide with an endpoint (1m tolerance)
                 road_positions = [
                     (px, py) for px, py in raw_positions
-                    if math.sqrt((px - x_from) ** 2 + (py - y_from) ** 2) > 1
-                    and math.sqrt((px - x_to) ** 2 + (py - y_to) ** 2) > 1
+                    if math.sqrt((px - x_from) ** 2 + (py - y_from) ** 2) > self._ENDPOINT_SNAP_TOL_M
+                    and math.sqrt((px - x_to) ** 2 + (py - y_to) ** 2) > self._ENDPOINT_SNAP_TOL_M
                 ]
 
             if road_positions:
@@ -1188,7 +1193,7 @@ class GridOptimizer:
         exclude_lst.extend(
             self.nodes[self.nodes["shs_options"] == 1]["parent"].unique()
         )
-        for _ in range(100):
+        for _ in range(self._MAX_SHS_ITER):
             counter = 0
             leaf_poles = self.nodes[self.nodes["n_distribution_links"] == 1].index
             for pole in leaf_poles:
@@ -1212,7 +1217,7 @@ class GridOptimizer:
                     "cost_per_branch",
                 ].iloc[0] / (
                     self.nodes.loc[consumer_of_branch, "yearly_consumption"].sum()
-                    + 1e-9
+                    + self._COST_EPS
                 )
                 if average_marginal_cost_of_pole > self.max_levelized_grid_cost or (
                     average_total_cost_of_pole > self.max_levelized_grid_cost
@@ -1735,7 +1740,7 @@ class GridOptimizer:
         poles["custom_specification"] = ""
         poles["shs_options"] = 0
         # High-offset cluster labels avoid collision with k-means labels (0..n)
-        poles["cluster_label"] = range(100000, 100000 + len(poles))
+        poles["cluster_label"] = range(self._ROAD_POLE_CLUSTER_OFFSET, self._ROAD_POLE_CLUSTER_OFFSET + len(poles))
 
         self.nodes = pd.concat(
             [self.nodes, poles],
