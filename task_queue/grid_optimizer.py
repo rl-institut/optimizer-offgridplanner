@@ -122,6 +122,7 @@ class GridOptimizer:
                     lat1, lon1 = coords[i + 1]
                     rows.append({
                         "road_id": f"{road["road_id"]}-{i}",
+                        "parent_road_id": road["road_id"],
                         "road_type": road["road_type"],
                         "how_added": road["how_added"],
                         "lat0": lat0, "lon0": lon0,
@@ -480,14 +481,13 @@ class GridOptimizer:
 
     def _clear_poles(self):
         """
-        Removes all poles from the grid, preserving road-sampled poles.
+        Removes all poles from the grid.
         """
         self.nodes = self.nodes.drop(
             [
                 label
                 for label in self.nodes.index
                 if self.nodes.node_type.loc[label] in ["pole"]
-                and self.nodes.how_added.loc[label] != "road-sampled"
             ],
             axis=0,
         )
@@ -525,15 +525,17 @@ class GridOptimizer:
             y_from = self.links.y_from[long_link]
             y_to = self.links.y_to[long_link]
 
+            # p-x label numbering continues from the highest existing pole index.
+            index_last_pole = int(self._poles().index[-1].split("-")[1])
 
-            # Get the index of the last pole in the grid. The new pole's index
-            # will start from this index.
-            last_pole = self._poles().index[-1]
-            # Split the pole's index using `-` as the separator, because poles
-            # are labeled in `p-x` format. x represents the index number, which
-            # must be an integer.
-            index_last_pole = int(last_pole.split("-")[1])
-
+            def _place_pole(label, x, y):
+                self._add_node(
+                    label=label, x=x, y=y,
+                    node_type="pole", consumer_type="n.a.", consumer_detail="n.a.",
+                    is_connected=True, how_added=long_link, type_fixed=True,
+                    cluster_label=1000,  # avoids inclusion in consumer clusters
+                    custom_specification="", shs_options=0,
+                )
 
             waypoints = (
                 self._road_path_between(x_from, y_from, x_to, y_to)
@@ -541,17 +543,16 @@ class GridOptimizer:
                 else None
             )
 
-            # Road path connects nearest road-graph vertices to each endpoint,
-            # not the endpoints themselves. If those vertices are close the road
-            # path can be shorter than max_length → zero intermediate positions.
-            # Fall back to straight-line in that case.
+            # Road path connects nearest road-graph vertices, not the endpoints
+            # themselves. If those vertices are very close, the sampled path may
+            # return zero intermediate positions → fall back to straight line.
             road_positions = []
             if waypoints is not None:
                 raw_positions = self._sample_points_along_polyline(
                     waypoints, self.distribution_cable_max_length
                 )
-                # 1 cm tolerance: exclude positions that land exactly on an
-                # endpoint when path length is a precise multiple of max_length.
+                # 1 cm tolerance: drop positions that coincide with an endpoint
+                # when path length is a precise multiple of max_length.
                 road_positions = [
                     (px, py) for px, py in raw_positions
                     if math.sqrt((px - x_from) ** 2 + (py - y_from) ** 2) > 0.01
@@ -560,70 +561,23 @@ class GridOptimizer:
 
             if road_positions:
                 for i, (px, py) in enumerate(road_positions):
-                    self._add_node(
-                        label=f"p-{i + 1 + index_last_pole}",
-                        x=px,
-                        y=py,
-                        node_type="pole",
-                        consumer_type="n.a.",
-                        consumer_detail="n.a.",
-                        is_connected=True,
-                        how_added=long_link,
-                        type_fixed=True,
-                        cluster_label=1000,
-                        custom_specification="",
-                        shs_options=0,
-                    )
+                    _place_pole(f"p-{i + 1 + index_last_pole}", px, py)
             else:
                 # Straight-line fallback: evenly spaced poles between endpoints.
                 n_required_poles = int(
-                    np.ceil(
-                        self.links.length[long_link] / self.distribution_cable_max_length,
-                    )
-                    - 1,
+                    np.ceil(self.links.length[long_link] / self.distribution_cable_max_length) - 1
                 )
-                # Calculate the slope of the line, connecting the start and end
-                # points of the long link.
                 slope = (y_to - y_from) / (x_to - x_from)
-
-                # Calculate the final length of the smaller links after splitting
-                # the long links into smaller parts.
                 length_smaller_links = self.links.length[long_link] / (n_required_poles + 1)
 
-                # Add all poles between the start and end points of the long link.
                 for i in range(1, n_required_poles + 1):
-                    x = x_from + np.sign(
-                        x_to - x_from,
-                    ) * i * length_smaller_links * np.sqrt(1 / (1 + slope**2))
-                    y = y_from + np.sign(y_to - y_from) * i * length_smaller_links * abs(
-                        slope,
-                    ) * np.sqrt(1 / (1 + slope**2))
-
-                    pole_label = f"p-{i + index_last_pole}"
-
-                    # In adding the pole, the `how_added` attribute is considered
-                    # `long-distance-init`, which means the pole is added because
-                    # of long distance in a distribution link.
-                    # The reason for using the `long_link` part is to distinguish
-                    # it with the poles which are already `connected` to the grid.
-                    # The poles in this stage are only placed on the line, and will
-                    # be connected to the other poles using another function.
-                    # The `cluster_label` is given as 1000, to avoid inclusion in
-                    # other clusters.
-                    self._add_node(
-                    label=pole_label,
-                        x=x,
-                        y=y,
-                        node_type="pole",
-                        consumer_type="n.a.",
-                        consumer_detail="n.a.",
-                        is_connected=True,
-                        how_added=long_link,
-                        type_fixed=True,
-                        cluster_label=1000,
-                        custom_specification="",
-                        shs_options=0,
+                    x = x_from + np.sign(x_to - x_from) * i * length_smaller_links * np.sqrt(
+                        1 / (1 + slope**2)
                     )
+                    y = y_from + np.sign(y_to - y_from) * i * length_smaller_links * abs(
+                        slope
+                    ) * np.sqrt(1 / (1 + slope**2))
+                    _place_pole(f"p-{i + index_last_pole}", x, y)
 
     def _add_node(self, label, **kwargs):
         """
