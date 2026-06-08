@@ -1961,6 +1961,52 @@ class GridOptimizer:
 
         return positions
 
+    def _find_opt_kmeans_for_unassigned(self, consumer_indices: pd.Index) -> int:
+        """Binary-search the minimum number of k-means clusters for `consumer_indices`
+        such that every resulting connection cable is within connection_cable_max_length.
+
+        Unlike _find_opt_number_of_poles / is_enough_poles, this does NOT call
+        _clear_poles() — road poles (rp-*) must survive untouched.  Instead it
+        records which p-* poles exist before each probe, adds k-means poles, checks
+        the constraint, then removes only those newly-added poles before trying the
+        next n.
+        """
+        n_min = (
+            max(1, math.ceil(len(consumer_indices) / self.pole_max_connection))
+            if self.pole_max_connection > 0
+            else 1
+        )
+        if n_min >= len(consumer_indices):
+            return n_min
+
+        def _probe(n: int) -> bool:
+            poles_before = set(self._poles().index)
+            self.kmeans_clustering(n_clusters=n, consumer_indices=consumer_indices)
+            self.connect_grid_consumers()
+            conn = self.links[self.links["link_type"] == "connection"]
+            violation = conn[
+                conn["to_node"].isin(consumer_indices)
+                | conn["from_node"].isin(consumer_indices)
+            ]
+            ok = (violation["length"] <= self.connection_cable_max_length).all()
+            # Roll back: drop poles added by this probe and their connection links.
+            added = [p for p in self._poles().index if p not in poles_before]
+            self.nodes = self.nodes.drop(index=added)
+            self._clear_links("connection")
+            return ok
+
+        space = list(range(n_min, len(consumer_indices) + 1))
+        while len(space) >= 5:
+            mid = space[len(space) // 2]
+            if _probe(mid):
+                space = [x for x in space if x <= mid]
+            else:
+                space = [x for x in space if x > mid]
+        for n in space:
+            if n == space[-1] or _probe(n):
+                return n
+        return n_min
+
     def _place_poles_with_roads(self):
         """
         Road-aware pole placement: sample poles along road geometries, associate
@@ -1974,11 +2020,7 @@ class GridOptimizer:
             unassigned = self.get_grid_consumers().index
 
         if len(unassigned) > 0:
-            n_kmeans = (
-                max(1, math.ceil(len(unassigned) / self.pole_max_connection))
-                if self.pole_max_connection > 0
-                else 1
-            )
+            n_kmeans = self._find_opt_kmeans_for_unassigned(unassigned)
             self.kmeans_clustering(n_clusters=n_kmeans, consumer_indices=unassigned)
 
     def is_enough_poles(self, n):
