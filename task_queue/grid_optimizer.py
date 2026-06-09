@@ -1931,16 +1931,7 @@ class GridOptimizer:
             return ok
 
         space = list(range(n_min, len(consumer_indices) + 1))
-        while len(space) >= 5:
-            mid = space[len(space) // 2]
-            if _probe(mid):
-                space = [x for x in space if x <= mid]
-            else:
-                space = [x for x in space if x > mid]
-        for n in space:
-            if n == space[-1] or _probe(n):
-                return n
-        return n_min
+        return self._binary_search_n(space, _probe)
 
     def _place_poles_with_roads(self):
         """
@@ -1958,6 +1949,25 @@ class GridOptimizer:
             n_kmeans = self._find_opt_kmeans_for_unassigned(unassigned)
             self.kmeans_clustering(n_clusters=n_kmeans, consumer_indices=unassigned)
 
+    @staticmethod
+    def _binary_search_n(space: list, probe) -> int:
+        """Binary-search the minimum n in space that satisfies probe(n).
+
+        Narrows with median pivot until fewer than 5 candidates remain,
+        then scans linearly. Returns first satisfying n, or the last
+        element as a guaranteed fallback.
+        """
+        while len(space) >= 5:
+            mid = space[len(space) // 2]
+            if probe(mid):
+                space = [x for x in space if x <= mid]
+            else:
+                space = [x for x in space if x > mid]
+        for n in space:
+            if n == space[-1] or probe(n):
+                return n
+        return space[0]
+
     def is_enough_poles(self, n):
         self._clear_poles()
         self.kmeans_clustering(n_clusters=n)
@@ -1969,31 +1979,13 @@ class GridOptimizer:
         return not constraints_violation.shape[0] > 0
 
     def _find_opt_number_of_poles(self, n_mg_consumers):
-        # calculate the minimum number of poles based on the
-        # maximum number of connections at each pole
-        if self.pole_max_connection == 0:
-            min_number_of_poles = 1
-        else:
-            min_number_of_poles = int(
-                np.ceil(n_mg_consumers / self.pole_max_connection),
-            )
-
-        space = pd.Series(range(min_number_of_poles, n_mg_consumers, 1))
-
-        for _ in range(min_number_of_poles, n_mg_consumers, 1):
-            median_search_threshold = 5
-            if len(space) >= median_search_threshold:
-                next_n = int(space.median())
-                if self.is_enough_poles(next_n) is True:
-                    space = space[space <= next_n]
-                else:
-                    space = space[space > next_n]
-            else:
-                for next_n in space:
-                    if next_n == space.iloc[-1] or self.is_enough_poles(next_n) is True:
-                        return next_n
-
-
+        min_number_of_poles = (
+            int(np.ceil(n_mg_consumers / self.pole_max_connection))
+            if self.pole_max_connection > 0
+            else 1
+        )
+        space = list(range(min_number_of_poles, n_mg_consumers))
+        return self._binary_search_n(space, self.is_enough_poles)
 
 
 
