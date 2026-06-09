@@ -379,9 +379,12 @@ def test_process_links_formats_coordinates_and_drops_internal_columns(
     optimizer: GridOptimizer,
 ) -> None:
     optimizer._add_node(
-        "p-0", node_type="pole", latitude=1.23456789, longitude=2.34567891
+        "p-0", node_type="pole", latitude=1.23456789, longitude=2.34567891,
+        x=0.0, y=5.0,
     )
-    optimizer.nodes.loc["0", ["latitude", "longitude"]] = [3.45678912, 4.56789123]
+    optimizer.nodes.loc["0", ["latitude", "longitude", "x", "y"]] = [
+        3.45678912, 4.56789123, 0.0, 0.0,
+    ]
     optimizer._add_links("p-0", "0")
 
     result = optimizer._process_links()
@@ -944,4 +947,377 @@ def test_optimize_full_pipeline_shs_consumer(shs_grid_payload: dict) -> None:
     unreachable = [p for p in all_poles if p not in reachable]
     assert not unreachable, (
         f"Poles not reachable from power house after SHS pruning: {unreachable}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Road graph construction and road-following intermediate poles
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+def test_build_road_graph_creates_correct_weighted_adjacency(
+    optimizer: GridOptimizer,
+) -> None:
+    """_build_road_graph produces a symmetric sparse adjacency matrix with correct weights.
+
+    Hand-calculable triangle (all lengths exact integers or 3-4-5 right triangles):
+
+        V0 = (0, 0)   V1 = (3, 4)   V2 = (6, 0)
+
+        V0 → V1 : sqrt(3²+4²) = 5 m
+        V1 → V2 : sqrt(3²+4²) = 5 m
+        V0 → V2 : 6 m
+
+    Expected 3×3 symmetric graph (row/col indexed by vertex):
+
+        V0  [  0   5   6 ]
+        V1  [  5   0   5 ]
+        V2  [  6   5   0 ]
+    """
+    pytest.importorskip("scipy")
+
+    optimizer.roads = pd.DataFrame({
+        "x0": [0.0, 3.0, 0.0],
+        "y0": [0.0, 4.0, 0.0],
+        "x1": [3.0, 6.0, 6.0],
+        "y1": [4.0, 0.0, 0.0],
+    })
+    optimizer._build_road_graph()
+
+    assert optimizer._road_graph.shape == (3, 3), "Expected 3 unique vertices"
+    assert len(optimizer._road_vertices) == 3
+
+    verts = optimizer._road_vertices
+
+    def vidx(x, y):
+        for i, (vx, vy) in enumerate(verts):
+            if abs(vx - x) < 0.01 and abs(vy - y) < 0.01:
+                return i
+        raise AssertionError(f"Vertex ({x}, {y}) not found in {list(verts)}")
+
+    i0 = vidx(0, 0)
+    i1 = vidx(3, 4)
+    i2 = vidx(6, 0)
+    assert len({i0, i1, i2}) == 3, "Vertices not distinct"
+
+    dense = optimizer._road_graph.toarray()
+
+    assert dense[i0, i1] == pytest.approx(5.0), "V0-V1 edge weight wrong"
+    assert dense[i1, i0] == pytest.approx(5.0), "Graph not symmetric at V0-V1"
+    assert dense[i1, i2] == pytest.approx(5.0), "V1-V2 edge weight wrong"
+    assert dense[i2, i1] == pytest.approx(5.0), "Graph not symmetric at V1-V2"
+    assert dense[i0, i2] == pytest.approx(6.0), "V0-V2 edge weight wrong"
+    assert dense[i2, i0] == pytest.approx(6.0), "Graph not symmetric at V0-V2"
+
+    assert dense[i0, i0] == 0.0
+    assert dense[i1, i1] == 0.0
+    assert dense[i2, i2] == 0.0
+
+    # 3 undirected edges → 6 non-zero entries
+    assert optimizer._road_graph.nnz == 6
+
+
+@pytest.mark.integration
+def test_build_road_graph_deduplicates_shared_endpoints(
+    optimizer: GridOptimizer,
+) -> None:
+    """Shared segment endpoints produce a single vertex, not duplicates.
+
+    Two collinear segments: (0,0)→(100,0) and (100,0)→(200,0).
+    The shared endpoint (100,0) must appear exactly once → 3 vertices total,
+    not 4.  The graph must be a simple path V0-V1-V2 (2 edges).
+    """
+    pytest.importorskip("scipy")
+
+    optimizer.roads = pd.DataFrame({
+        "x0": [0.0,   100.0],
+        "y0": [0.0,   0.0],
+        "x1": [100.0, 200.0],
+        "y1": [0.0,   0.0],
+    })
+    optimizer._build_road_graph()
+
+    assert optimizer._road_graph.shape == (3, 3), "Shared endpoint must be deduplicated"
+    assert optimizer._road_graph.nnz == 4   # 2 edges × 2 directions
+
+
+@pytest.mark.integration
+def test_road_following_places_intermediate_poles_along_road(
+    optimizer: GridOptimizer,
+) -> None:
+    """Intermediate poles on long links follow road geometry, not a straight line.
+
+    Layout (UTM metres):
+
+        A(0,0) -------- B(300,0)   straight line (y=0)
+
+        A(0,0)          B(300,0)
+           |             |
+           |             |
+        (0,150) ---- (300,150)   road runs along y=150
+
+    distribution_cable_max_length = 100 m.
+    Straight-line A→B = 300 m → 2 intermediate poles, both at y = 0.
+    Road path A→B = 600 m → 5 intermediate poles, all at y > 0.
+    """
+    pytest.importorskip("scipy")
+
+    optimizer.roads = pd.DataFrame({
+        "x0": [0.0,   0.0,   300.0],
+        "y0": [0.0,   150.0, 150.0],
+        "x1": [0.0,   300.0, 300.0],
+        "y1": [150.0, 150.0, 0.0],
+    })
+    optimizer._build_road_graph()
+
+    waypoints = optimizer._road_path_between(0.0, 0.0, 300.0, 0.0)
+    assert waypoints is not None, "No road path found — U-shaped road should connect (0,0) to (300,0)"
+
+    raw = GridOptimizer._sample_points_along_polyline(
+        waypoints, optimizer.distribution_cable_max_length
+    )
+    # Drop positions coinciding with endpoints (same filter as production code).
+    poles = [
+        (px, py) for px, py in raw
+        if math.sqrt((px - 0.0) ** 2 + (py - 0.0) ** 2) > 1.0
+        and math.sqrt((px - 300.0) ** 2 + (py - 0.0) ** 2) > 1.0
+    ]
+
+    assert len(poles) >= 3, (
+        f"Expected at least 3 intermediate poles along 600 m road path, got {len(poles)}: {poles}"
+    )
+
+    for px, py in poles:
+        assert py > 1.0, (
+            f"Pole at ({px:.1f}, {py:.1f}) lies on the straight line (y≈0) — "
+            f"road following did not activate. All road poles should have y > 0."
+        )
+
+    # Consecutive poles (plus endpoints) must not exceed max_length.
+    chain = [(0.0, 0.0)] + poles + [(300.0, 0.0)]
+    max_len = optimizer.distribution_cable_max_length
+    for (ax, ay), (bx, by) in zip(chain, chain[1:]):
+        dist = math.sqrt((bx - ax) ** 2 + (by - ay) ** 2)
+        assert dist <= max_len + 1.0, (
+            f"Gap between ({ax:.0f},{ay:.0f}) and ({bx:.0f},{by:.0f}) = {dist:.1f} m "
+            f"> max {max_len} m"
+        )
+
+
+# ---------------------------------------------------------------------------
+# _binary_search_n
+# ---------------------------------------------------------------------------
+
+def test_binary_search_n_finds_minimum_satisfying_n(optimizer: GridOptimizer) -> None:
+    result = optimizer._binary_search_n(list(range(1, 11)), lambda n: n >= 4)
+    assert result == 4
+
+
+def test_binary_search_n_returns_last_element_when_nothing_satisfies(
+    optimizer: GridOptimizer,
+) -> None:
+    # probe always False — last element is the guaranteed fallback
+    result = optimizer._binary_search_n([1, 2, 3], lambda n: False)
+    assert result == 3
+
+
+def test_binary_search_n_single_candidate(optimizer: GridOptimizer) -> None:
+    result = optimizer._binary_search_n([7], lambda n: n >= 7)
+    assert result == 7
+
+
+def test_binary_search_n_all_satisfy_returns_first(optimizer: GridOptimizer) -> None:
+    result = optimizer._binary_search_n(list(range(1, 20)), lambda n: True)
+    assert result == 1
+
+
+# ---------------------------------------------------------------------------
+# _sample_road_poles
+# ---------------------------------------------------------------------------
+
+def test_sample_road_poles_places_poles_at_interval(optimizer: GridOptimizer) -> None:
+    """250 m road split into two segments, max_length=100 m → 4 poles at 0, 100, 200, 250."""
+    optimizer.roads = pd.DataFrame({
+        "x0": [0.0, 125.0],
+        "y0": [0.0, 0.0],
+        "x1": [125.0, 250.0],
+        "y1": [0.0, 0.0],
+        "road_id": ["r-0", "r-1"],
+        "parent_road_id": ["road-1", "road-1"],
+    })
+
+    count = optimizer._sample_road_poles()
+
+    road_poles = optimizer.nodes[optimizer.nodes.index.str.startswith("rp-")]
+    assert count == 4
+    assert len(road_poles) == 4
+    xs = sorted(road_poles["x"].tolist())
+    assert xs == pytest.approx([0.0, 100.0, 200.0, 250.0], abs=1.0)
+
+
+def test_sample_road_poles_deduplicates_shared_endpoint(
+    optimizer: GridOptimizer,
+) -> None:
+    """Two separate polylines share endpoint (100, 0) — must appear exactly once."""
+    optimizer.roads = pd.DataFrame({
+        "x0": [0.0, 100.0],
+        "y0": [0.0, 0.0],
+        "x1": [100.0, 200.0],
+        "y1": [0.0, 0.0],
+        "road_id": ["r-0", "r-1"],
+        "parent_road_id": ["road-1", "road-2"],
+    })
+
+    optimizer._sample_road_poles()
+
+    road_poles = optimizer.nodes[optimizer.nodes.index.str.startswith("rp-")]
+    xs_at_100 = [x for x in road_poles["x"].tolist() if abs(x - 100.0) < 0.1]
+    assert len(xs_at_100) == 1, "Shared endpoint (100, 0) must appear exactly once"
+
+
+def test_sample_road_poles_adds_required_columns(optimizer: GridOptimizer) -> None:
+    """Road poles must carry all columns expected by downstream methods."""
+    optimizer.roads = pd.DataFrame({
+        "x0": [0.0], "y0": [0.0], "x1": [50.0], "y1": [0.0],
+        "road_id": ["r-0"], "parent_road_id": ["road-1"],
+    })
+
+    optimizer._sample_road_poles()
+
+    road_poles = optimizer.nodes[optimizer.nodes.index.str.startswith("rp-")]
+    for col in ("n_connection_links", "n_distribution_links", "parent",
+                "custom_specification", "shs_options"):
+        assert col in road_poles.columns, f"Missing column: {col}"
+    assert (road_poles["n_connection_links"] == 0).all()
+    assert (road_poles["shs_options"] == 0).all()
+    assert (road_poles["node_type"] == "pole").all()
+
+
+# ---------------------------------------------------------------------------
+# _associate_consumers_to_road_poles
+# ---------------------------------------------------------------------------
+
+def test_associate_consumers_assigns_nearby_returns_far_unassigned(
+    optimizer: GridOptimizer,
+) -> None:
+    """Consumer within connection_cable_max_length is assigned; one beyond is not."""
+    optimizer.nodes = optimizer.nodes[optimizer.nodes["node_type"] != "power-house"].copy()
+    optimizer.nodes.loc["0", ["x", "y", "is_connected", "node_type"]] = [0.0, 0.0, True, "consumer"]
+    optimizer.nodes.loc["1", ["x", "y", "is_connected", "node_type"]] = [500.0, 0.0, True, "consumer"]
+    optimizer._add_node(
+        "rp-0", node_type="pole", x=10.0, y=0.0,
+        how_added="road-sampled", cluster_label=100000, is_connected=True,
+    )
+
+    unassigned = optimizer._associate_consumers_to_road_poles()
+
+    assert "0" not in unassigned, "Consumer within range must be assigned"
+    assert "1" in unassigned, "Consumer beyond max_length must be unassigned"
+    assert optimizer.nodes.at["0", "cluster_label"] == 100000
+
+
+def test_associate_consumers_drops_empty_road_pole(optimizer: GridOptimizer) -> None:
+    """Road pole that attracts no consumers must be removed from self.nodes."""
+    optimizer.nodes = optimizer.nodes[optimizer.nodes["node_type"] != "power-house"].copy()
+    optimizer.nodes.loc["0", ["x", "y", "is_connected", "node_type"]] = [0.0, 0.0, True, "consumer"]
+    optimizer.nodes.loc["1", ["x", "y", "is_connected", "node_type"]] = [0.0, 1.0, True, "consumer"]
+    # rp-0 close to consumers; rp-1 far beyond connection_cable_max_length (40 m)
+    optimizer._add_node("rp-0", node_type="pole", x=0.0, y=0.0,
+                        how_added="road-sampled", cluster_label=100000, is_connected=True)
+    optimizer._add_node("rp-1", node_type="pole", x=999.0, y=0.0,
+                        how_added="road-sampled", cluster_label=100001, is_connected=True)
+
+    optimizer._associate_consumers_to_road_poles()
+
+    assert "rp-0" in optimizer.nodes.index, "Used road pole must be kept"
+    assert "rp-1" not in optimizer.nodes.index, "Empty road pole must be dropped"
+
+
+# ---------------------------------------------------------------------------
+# _build_branch_hierarchy
+# ---------------------------------------------------------------------------
+
+def test_allocate_branches_assigns_branch_and_propagates_to_consumers(
+    optimizer: GridOptimizer,
+) -> None:
+    """Linear chain: c-0/c-1 → p-0/p-1 → power-house.
+
+    Both poles must end up in branch p-0; both consumers must inherit that branch.
+    """
+    optimizer.nodes = optimizer.nodes[optimizer.nodes["node_type"] != "consumer"].copy()
+    optimizer.nodes.loc["2", ["x", "y", "node_type", "parent", "n_distribution_links"]] = [
+        0.0, 0.0, "power-house", "unknown", 1,
+    ]
+    optimizer._add_node("p-0", node_type="pole", consumer_type="n.a.", consumer_detail="n.a.",
+                        x=10.0, y=0.0, parent="unknown", n_distribution_links=2)
+    optimizer._add_node("p-1", node_type="pole", consumer_type="n.a.", consumer_detail="n.a.",
+                        x=20.0, y=0.0, parent="unknown", n_distribution_links=1)
+    optimizer._add_node("c-0", node_type="consumer", x=15.0, y=0.0, parent="p-0")
+    optimizer._add_node("c-1", node_type="consumer", x=25.0, y=0.0, parent="p-1")
+
+    optimizer._add_links("p-0", "2")
+    optimizer._add_links("p-1", "p-0")
+    optimizer._set_direction_of_links()
+    optimizer.distribution_links = optimizer.links[optimizer.links["link_type"] == "distribution"]
+
+    optimizer.allocate_poles_to_branches()
+    optimizer.allocate_subbranches_to_branches()
+    optimizer.label_branch_of_consumers()
+
+    assert optimizer.nodes.at["p-0", "branch"] == "p-0"
+    assert optimizer.nodes.at["p-1", "branch"] == "p-0"
+    assert optimizer.nodes.at["c-0", "branch"] == "p-0"
+    assert optimizer.nodes.at["c-1", "branch"] == "p-0"
+
+
+# ---------------------------------------------------------------------------
+# _find_opt_kmeans_for_unassigned
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+def test_find_opt_kmeans_for_unassigned_satisfies_cable_length(
+    grid_design: dict,
+) -> None:
+    """Binary search must find n such that all connection cables ≤ max_length.
+
+    4 consumers spaced ~50 m apart; connection_cable_max_length = 40 m.
+    One cluster centred between two adjacent consumers is ~25 m from each,
+    so n=2 should be sufficient.  The method must return n ≥ 1 and the
+    final clustering must produce no violated cable.
+    """
+    pytest.importorskip("k_means_constrained")
+    pytest.importorskip("utm")
+    pytest.importorskip("pyproj")
+
+    design = copy.deepcopy(grid_design)
+    design["pole"]["max_n_connections"] = 2  # size_max must not exceed n_samples (4)
+    payload = {
+        "nodes": [
+            {
+                "latitude": 0.0,
+                "longitude": float(i) * 0.00045,
+                "node_type": "consumer",
+                "consumer_type": "household",
+                "consumer_detail": str(i),
+                "how_added": "manual",
+                "shs_options": 0,
+                "custom_specification": "",
+            }
+            for i in range(4)
+        ],
+        "grid_design": design,
+        "yearly_demand": 1_200.0,
+    }
+    opt = GridOptimizer(payload)
+    opt.convert_lonlat_xy()
+
+    n = opt._find_opt_kmeans_for_unassigned(opt.get_grid_consumers().index)
+
+    assert n >= 1
+    opt.kmeans_clustering(n_clusters=n, consumer_indices=opt.get_grid_consumers().index)
+    opt.connect_grid_consumers()
+    conn = opt.links[opt.links["link_type"] == "connection"]
+    assert (conn["length"] <= opt.connection_cable_max_length).all(), (
+        f"Cable length violated with n={n}: max={conn['length'].max():.1f} m "
+        f"> limit={opt.connection_cable_max_length} m"
     )
