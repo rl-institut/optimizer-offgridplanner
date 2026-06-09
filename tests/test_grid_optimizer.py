@@ -1260,9 +1260,7 @@ def test_allocate_branches_assigns_branch_and_propagates_to_consumers(
     optimizer._set_direction_of_links()
     optimizer.distribution_links = optimizer.links[optimizer.links["link_type"] == "distribution"]
 
-    optimizer.allocate_poles_to_branches()
-    optimizer.allocate_subbranches_to_branches()
-    optimizer.label_branch_of_consumers()
+    optimizer._build_branch_hierarchy()
 
     assert optimizer.nodes.at["p-0", "branch"] == "p-0"
     assert optimizer.nodes.at["p-1", "branch"] == "p-0"
