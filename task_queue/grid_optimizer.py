@@ -1795,6 +1795,8 @@ class GridOptimizer:
         if self.fixed_poles is None or len(self.fixed_poles) == 0:
             return
 
+        p = Proj(proj="utm", zone=self._utm_zone, ellps="WGS84", preserve_units=False)
+
         for _, fixed_pole in self.fixed_poles.iterrows():
             lat_fixed = fixed_pole["latitude"]
             lon_fixed = fixed_pole["longitude"]
@@ -1813,5 +1815,36 @@ class GridOptimizer:
                     nearest_pole_label = pole_label
 
             if nearest_pole_label is not None:
+                # Update lat/lon in nodes
                 self.nodes.loc[nearest_pole_label, "latitude"] = lat_fixed
                 self.nodes.loc[nearest_pole_label, "longitude"] = lon_fixed
+
+                # Recompute x/y for this pole from the new lat/lon
+                x_new, y_new = p(lon_fixed, lat_fixed)
+                self.nodes.loc[nearest_pole_label, "x"] = x_new
+                self.nodes.loc[nearest_pole_label, "y"] = y_new
+
+                # Update all links where this pole is the "from" node
+                from_mask = self.links["from_node"] == nearest_pole_label
+                self.links.loc[from_mask, "lat_from"] = lat_fixed
+                self.links.loc[from_mask, "lon_from"] = lon_fixed
+                self.links.loc[from_mask, "x_from"] = x_new
+                self.links.loc[from_mask, "y_from"] = y_new
+
+                # Update all links where this pole is the "to" node
+                to_mask = self.links["to_node"] == nearest_pole_label
+                self.links.loc[to_mask, "lat_to"] = lat_fixed
+                self.links.loc[to_mask, "lon_to"] = lon_fixed
+                self.links.loc[to_mask, "x_to"] = x_new
+                self.links.loc[to_mask, "y_to"] = y_new
+
+                # Recompute cable lengths for all affected links
+                affected_links = self.links[from_mask | to_mask].index
+                for link_label in affected_links:
+                    x1 = self.links.loc[link_label, "x_from"]
+                    y1 = self.links.loc[link_label, "y_from"]
+                    x2 = self.links.loc[link_label, "x_to"]
+                    y2 = self.links.loc[link_label, "y_to"]
+                    self.links.loc[link_label, "length"] = np.sqrt(
+                        (x1 - x2) ** 2 + (y1 - y2) ** 2
+                    )
