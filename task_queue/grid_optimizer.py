@@ -181,9 +181,7 @@ class GridOptimizer:
         self.convert_lonlat_xy()
         if self.roads is not None:
             self._build_road_graph()
-        # Unconditional: drop ALL poles from previous runs before placing fresh ones.
-        # _clear_poles() preserves road-sampled poles for mid-run probing; here we
-        # want a truly blank slate regardless of how_added.
+        # Drop ALL poles from previous runs -> _clear_poles() preserves road-sampled poles
         self.nodes = self.nodes[self.nodes["node_type"] != "pole"]
         n_total_consumers = len(self.nodes)
         n_shs_consumers = len(self.nodes[self.nodes["is_connected"] == False])  # noqa: E712
