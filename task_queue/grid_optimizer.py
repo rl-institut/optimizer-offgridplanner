@@ -544,12 +544,11 @@ class GridOptimizer:
                 raw_positions = self._sample_points_along_polyline(
                     waypoints, self.distribution_cable_max_length
                 )
-                # 1 cm tolerance: drop positions that coincide with an endpoint
-                # when path length is a precise multiple of max_length.
+                # Drop positions that coincide with an endpoint (1m tolerance)
                 road_positions = [
                     (px, py) for px, py in raw_positions
-                    if math.sqrt((px - x_from) ** 2 + (py - y_from) ** 2) > 0.01
-                    and math.sqrt((px - x_to) ** 2 + (py - y_to) ** 2) > 0.01
+                    if math.sqrt((px - x_from) ** 2 + (py - y_from) ** 2) > 1
+                    and math.sqrt((px - x_to) ** 2 + (py - y_to) ** 2) > 1
                 ]
 
             if road_positions:
