@@ -483,7 +483,7 @@ class EnergySystemOptimizer:
         # self.model = model
         if len(model.solutions) > 0:
             energy_system.results["meta"] = solph.processing.meta_results(model)
-            results = solph.processing.results(model)
+            results = solph.processing.results(model, remove_last_time_point=True)
             return results
         else:
             print("No solution found")
