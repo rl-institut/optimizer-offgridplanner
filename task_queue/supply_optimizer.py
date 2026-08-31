@@ -43,15 +43,14 @@ two primary modes: dispatch and design.
     optimization process.
 """
 
-import json
 import logging
 import time
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import pyomo.environ as po
 from oemof import solph
-from datetime import datetime
 
 SOLVER_NAME = "cbc"
 # from offgridplanner.optimization.models import DemandCoverage
