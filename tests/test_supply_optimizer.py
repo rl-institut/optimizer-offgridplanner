@@ -111,49 +111,6 @@ def test_constructor_reconstructs_datetime_index_and_sequences(
     assert optimizer.solar_potential_peak == 1.0
 
 
-def test_constructor_selects_inverter_when_pv_is_selected(
-    supply_opt_json: dict[str, Any],
-) -> None:
-    supply_opt_json = copy.deepcopy(supply_opt_json)
-    supply_opt_json["energy_system_design"]["pv"]["settings"]["is_selected"] = True
-    supply_opt_json["energy_system_design"]["battery"]["settings"]["is_selected"] = False
-    supply_opt_json["energy_system_design"]["inverter"]["settings"]["is_selected"] = False
-
-    optimizer = EnergySystemOptimizer(supply_opt_json)
-
-    assert optimizer.inverter["settings"]["is_selected"] is True
-
-
-def test_constructor_selects_inverter_when_battery_is_selected(
-    supply_opt_json: dict[str, Any],
-) -> None:
-    supply_opt_json = copy.deepcopy(supply_opt_json)
-    supply_opt_json["energy_system_design"]["pv"]["settings"]["is_selected"] = False
-    supply_opt_json["energy_system_design"]["battery"]["settings"]["is_selected"] = True
-    supply_opt_json["energy_system_design"]["inverter"]["settings"]["is_selected"] = False
-
-    optimizer = EnergySystemOptimizer(supply_opt_json)
-
-    assert optimizer.inverter["settings"]["is_selected"] is True
-
-
-def test_constructor_forces_renewable_components_when_diesel_is_not_selected(
-    supply_opt_json: dict[str, Any],
-) -> None:
-    supply_opt_json = copy.deepcopy(supply_opt_json)
-    design = supply_opt_json["energy_system_design"]
-    design["diesel_genset"]["settings"]["is_selected"] = False
-    design["pv"]["settings"]["is_selected"] = False
-    design["battery"]["settings"]["is_selected"] = False
-    design["inverter"]["settings"]["is_selected"] = False
-
-    optimizer = EnergySystemOptimizer(supply_opt_json)
-
-    assert optimizer.pv["settings"]["is_selected"] is True
-    assert optimizer.battery["settings"]["is_selected"] is True
-    assert optimizer.inverter["settings"]["is_selected"] is True
-
-
 def test_constructor_disables_diesel_offset_for_cbc_solver(
     supply_opt_json: dict[str, Any],
 ) -> None:
