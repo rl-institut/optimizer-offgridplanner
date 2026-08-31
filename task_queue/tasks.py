@@ -41,9 +41,6 @@ def task_supply_opt(simulation_input: dict,) -> dict:
         simulation_output = optimize_energy_system(simulation_input)
         logger.info("Simulation finished")
         simulation_output["SERVER"] = CELERY_TASK_NAME
-        if "message" in simulation_output:
-            simulation_output["ERROR"] = simulation_output["message"]
-            simulation_output["INPUT_JSON"] = simulation_input
         simulation_output = json.dumps(simulation_output)
     except Exception as e:
         logger.error(
