@@ -82,15 +82,6 @@ class EnergySystemOptimizer:
         supply_opt_dict = supply_opt_json
         energy_system_design = supply_opt_dict["energy_system_design"]
         supply_opt_sequences = supply_opt_dict["sequences"]
-        if (
-            energy_system_design["pv"]["settings"]["is_selected"] is True
-            or energy_system_design["battery"]["settings"]["is_selected"] is True
-        ):
-            energy_system_design["inverter"]["settings"]["is_selected"] = True
-        if energy_system_design["diesel_genset"]["settings"]["is_selected"] is False:
-            energy_system_design["inverter"]["settings"]["is_selected"] = True
-            energy_system_design["battery"]["settings"]["is_selected"] = True
-            energy_system_design["pv"]["settings"]["is_selected"] = True
         solver = SOLVER_NAME
         if solver == "cbc":
             energy_system_design["diesel_genset"]["settings"]["offset"] = False
