@@ -43,15 +43,14 @@ two primary modes: dispatch and design.
     optimization process.
 """
 
-import json
 import logging
 import time
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import pyomo.environ as po
 from oemof import solph
-from datetime import datetime
 
 SOLVER_NAME = "cbc"
 # from offgridplanner.optimization.models import DemandCoverage
@@ -62,10 +61,17 @@ SOLVER_NAME = "cbc"
 logger = logging.getLogger(__name__)
 
 
+class InfeasibleError(RuntimeError):
+    """
+    Raised when the optimization returns infeasible
+    """
+
 def optimize_energy_system(energy_system_json):
     ensys_opt = EnergySystemOptimizer(supply_opt_json=energy_system_json)
     results = ensys_opt.optimize()
     esr = {}
+    if "message" in results:
+        raise InfeasibleError(results["message"])
     for k, v in results.items():
         v['scalars'] = v['scalars'].to_json()
         v['sequences'] = np.squeeze(v['sequences'].dropna().values).tolist()

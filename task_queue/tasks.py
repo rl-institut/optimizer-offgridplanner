@@ -11,17 +11,15 @@ or been revoked. This setup enables efficient, asynchronous processing of comple
 
 
 
-import os
-import time
-import traceback
 import json
-from copy import deepcopy
+import os
+import traceback
+
 from celery import Celery
 from celery.utils.log import get_task_logger
 
-from task_queue.supply_optimizer import optimize_energy_system
 from task_queue.grid_optimizer import optimize_grid
-
+from task_queue.supply_optimizer import InfeasibleError, optimize_energy_system
 
 logger = get_task_logger(__name__)
 CELERY_BROKER_URL = (os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379"),)
@@ -34,47 +32,45 @@ CELERY_TASK_NAME = os.environ.get("CELERY_TASK_NAME", "grid")
 app = Celery(CELERY_TASK_NAME, broker=CELERY_BROKER_URL, backend=CELERY_RESULT_BACKEND)
 
 
-@app.task(name=f"supply.run_simulation")
+@app.task(name="supply.run_simulation")
 def task_supply_opt(simulation_input: dict,) -> dict:
     logger.info("Start new simulation")
     try:
         simulation_output = optimize_energy_system(simulation_input)
         logger.info("Simulation finished")
         simulation_output["SERVER"] = CELERY_TASK_NAME
-        if "message" in simulation_output:
-            simulation_output["ERROR"] = simulation_output["message"]
-            simulation_output["INPUT_JSON"] = simulation_input
         simulation_output = json.dumps(simulation_output)
     except Exception as e:
-        logger.error(
-            "An exception occured in the simulation task: {}".format(
-                traceback.format_exc()
+        if isinstance(e, InfeasibleError):
+            logger.info("Simulation infeasible")
+            err_msg = str(e)
+        else:
+            logger.error(
+                f"An exception occured in the simulation task: {traceback.format_exc()}"
             )
-        )
+            err_msg = traceback.format_exc()
         simulation_output = json.dumps(dict(
             SERVER=CELERY_TASK_NAME,
-            ERROR="{}".format(traceback.format_exc()),
+            ERROR=f"{err_msg}",
             INPUT_JSON=simulation_input,
         ))
     return simulation_output
 
 
-@app.task(name=f"grid.run_simulation")
+@app.task(name="grid.run_simulation")
 def task_grid_opt(simulation_input: dict,) -> dict:
     logger.info("Start new simulation")
     try:
         simulation_output = optimize_grid(simulation_input)
         logger.info("Simulation finished")
         simulation_output["SERVER"] = CELERY_TASK_NAME
-    except Exception as e:
+    except Exception:
         logger.error(
-            "An exception occured in the simulation task: {}".format(
-                traceback.format_exc()
-            )
+            f"An exception occured in the simulation task: {traceback.format_exc()}"
         )
         simulation_output = dict(
             SERVER=CELERY_TASK_NAME,
-            ERROR="{}".format(traceback.format_exc()),
+            ERROR=f"{traceback.format_exc()}",
             INPUT_JSON=simulation_input,
         )
     return json.dumps(simulation_output)
