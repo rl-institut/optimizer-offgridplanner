@@ -21,7 +21,7 @@ from celery.utils.log import get_task_logger
 
 from task_queue.supply_optimizer import optimize_energy_system
 from task_queue.grid_optimizer import optimize_grid
-
+from task_queue.supply_optimizer import InfeasibleError, optimize_energy_system
 
 logger = get_task_logger(__name__)
 CELERY_BROKER_URL = (os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379"),)
@@ -43,14 +43,17 @@ def task_supply_opt(simulation_input: dict,) -> dict:
         simulation_output["SERVER"] = CELERY_TASK_NAME
         simulation_output = json.dumps(simulation_output)
     except Exception as e:
-        logger.error(
-            "An exception occured in the simulation task: {}".format(
-                traceback.format_exc()
+        if isinstance(e, InfeasibleError):
+            logger.info("Simulation infeasible")
+            err_msg = str(e)
+        else:
+            logger.error(
+                f"An exception occured in the simulation task: {traceback.format_exc()}"
             )
-        )
+            err_msg = traceback.format_exc()
         simulation_output = json.dumps(dict(
             SERVER=CELERY_TASK_NAME,
-            ERROR="{}".format(traceback.format_exc()),
+            ERROR=f"{err_msg}",
             INPUT_JSON=simulation_input,
         ))
     return simulation_output

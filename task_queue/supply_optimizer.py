@@ -62,12 +62,17 @@ SOLVER_NAME = "cbc"
 logger = logging.getLogger(__name__)
 
 
+class InfeasibleError(RuntimeError):
+    """
+    Raised when the optimization returns infeasible
+    """
+
 def optimize_energy_system(energy_system_json):
     ensys_opt = EnergySystemOptimizer(supply_opt_json=energy_system_json)
     results = ensys_opt.optimize()
     esr = {}
     if "message" in results:
-        raise RuntimeError(results["message"])
+        raise InfeasibleError(results["message"])
     for k, v in results.items():
         v['scalars'] = v['scalars'].to_json()
         v['sequences'] = np.squeeze(v['sequences'].dropna().values).tolist()
